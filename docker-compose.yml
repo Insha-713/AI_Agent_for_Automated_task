@@ -1,0 +1,54 @@
+version: '3.8'
+
+services:
+  agentflow:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: agentflow-app
+    ports:
+      - "8000:8000"
+    environment:
+      # Connects to Ollama running locally on the host machine
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.1}
+      - WORKSPACE_DIR=/app/workspace
+      - EMAIL_USER=${EMAIL_USER:-}
+      - EMAIL_PASS=${EMAIL_PASS:-}
+      - PORT=8000
+      - HOST=0.0.0.0
+    extra_hosts:
+      # Enables container to reach localhost of host machine (Ollama)
+      - "host.docker.internal:host-gateway"
+    volumes:
+      # Persist sandboxed workspace documents
+      - ./workspace:/app/workspace
+      # Persist SQLite task history, schedules, and user memory
+      - ./agentflow.db:/app/agentflow.db
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+# Optional: If you want to run Ollama inside Docker instead of native desktop
+# profiles: ["with-ollama"]
+#   ollama:
+#     image: ollama/ollama:latest
+#     container_name: agentflow-ollama
+#     ports:
+#       - "11434:11434"
+#     volumes:
+#       - ollama_models:/root/.ollama
+#     deploy:
+#       resources:
+#         reservations:
+#           devices:
+#             - driver: nvidia
+#               count: all
+#               capabilities: [gpu]
+
+volumes:
+  ollama_models:
