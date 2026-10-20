@@ -22,7 +22,13 @@ from typing import Dict, Any, List, Optional, AsyncGenerator
 from dotenv import load_dotenv
 
 from langchain_core.messages import SystemMessage, HumanMessage
-from langchain_ollama import ChatOllama
+from backend.llm_provider import (
+    get_chat_llm,
+    get_active_model_name,
+    get_llm_provider,
+    is_llm_available,
+    detect_ollama_model
+)
 
 from backend.tools import (
     ALL_TOOLS,
@@ -949,9 +955,9 @@ async def generate_workflow_plan(prompt: str, preferences: Optional[Dict[str, st
     now = datetime.now(ist_tz)
     today_str = now.strftime("%A, %d %B %Y")
 
-    base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-    preferred_model = os.getenv("OLLAMA_MODEL", "llama3.1")
-    model_name = detect_ollama_model(base_url, preferred_model)
+    prov = get_llm_provider()
+    model_name = get_active_model_name(prov)
+    llm_available, llm_reason = is_llm_available()
 
     tools_catalog = "\n".join([
         f"- {tool_name}: {meta['description']} | Params: {list(meta['params'].keys())} | Requires Approval: {meta['requires_approval']}"
@@ -988,22 +994,13 @@ Allowed tools:
 5. Provide ONLY the JSON. No conversational preamble."""
 
     if plan_data is None:
-        def _is_ollama_alive(url: str) -> bool:
+        if llm_available:
             try:
-                import urllib.request
-                req = urllib.request.Request(f"{url.rstrip('/')}/api/tags", headers={"User-Agent": "AgentFlow"})
-                with urllib.request.urlopen(req, timeout=1.5) as r:
-                    return r.status == 200
-            except Exception:
-                return False
-
-        if _is_ollama_alive(base_url):
-            try:
-                llm = ChatOllama(
-                    model=model_name,
-                    base_url=base_url,
+                llm = get_chat_llm(
+                    provider=prov,
+                    model_name=model_name,
                     temperature=0.1,
-                    format="json",
+                    timeout=15.0
                 )
                 resp = await asyncio.wait_for(
                     asyncio.to_thread(
@@ -1013,12 +1010,14 @@ Allowed tools:
                             HumanMessage(content=f"Create a workflow plan for this task:\n{clean_prompt}")
                         ]
                     ),
-                    timeout=12.0
+                    timeout=15.0
                 )
                 raw_text = resp.content.strip()
                 plan_data = parse_llm_json_plan(raw_text)
             except Exception as e:
-                print(f"[Workflow Planner] LLM plan generation exception: {e}")
+                print(f"[Workflow Planner] LLM ({prov}) plan generation exception: {e}")
+        else:
+            print(f"[Workflow Planner] No LLM available on this server ({llm_reason}). Falling back to rule-based tool planner.")
 
     # Fallback if LLM was unreachable, timed out, or generated invalid structure
     if not plan_data or "steps" not in plan_data or not plan_data["steps"]:

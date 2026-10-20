@@ -57,14 +57,15 @@ const DEFAULT_SERVICES = [
     guidance: 'Open @BotFather on Telegram, send /newbot, and paste the generated bot token.'
   },
   {
-    service: 'ollama',
-    display_name: 'Ollama Local LLM',
+    service: 'llm',
+    display_name: 'AI Language Model (LLM)',
     status: 'connected',
     configured: true,
     latency_ms: 38,
     active_model: 'llama3.1',
-    message: 'Local inference engine operational (llama3.1).',
-    guidance: 'Runs 100% locally on your machine with zero API cost and full privacy.'
+    provider: 'ollama',
+    message: 'Local or cloud LLM inference engine.',
+    guidance: 'Supports Ollama (local), Groq (cloud), or Google Gemini (cloud).'
   },
   {
     service: 'search',
@@ -546,6 +547,7 @@ export default function SettingsPage({ onNavigate = () => {} }) {
 
   const getServiceIcon = (service) => {
     switch (service) {
+      case 'llm':
       case 'ollama': return Cpu;
       case 'telegram': return Send;
       case 'email': return Mail;
@@ -853,6 +855,31 @@ export default function SettingsPage({ onNavigate = () => {} }) {
                         </div>
                       </div>
                     )}
+
+                    {/* Active LLM Provider Details & Live Probe Result */}
+                    {(svc.service === 'llm' || svc.service === 'ollama') && (
+                      <div className="pt-2 border-t border-white/5 space-y-2">
+                        <div className="flex items-center justify-between text-[11px]">
+                          <span className="font-semibold text-slate-300 flex items-center gap-1.5">
+                            <Cpu className="w-3.5 h-3.5 text-cyan-400" />
+                            <span>Active Provider</span>
+                          </span>
+                          <span className="px-2 py-0.5 rounded text-[10px] font-mono font-semibold bg-cyan-500/10 text-cyan-300 border border-cyan-500/20">
+                            {currentStatus.provider ? currentStatus.provider.toUpperCase() : 'OLLAMA'}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between text-[11px] text-slate-400 font-mono">
+                          <span>Active Model:</span>
+                          <span className="text-slate-200 font-semibold">{currentStatus.active_model || 'llama3.1'}</span>
+                        </div>
+                        {currentStatus.test_response && (
+                          <div className="p-2.5 rounded-lg bg-emerald-950/40 border border-emerald-500/30 text-[11px] text-emerald-300 font-mono">
+                            <span className="font-semibold text-emerald-400">Probe Result: </span>
+                            "{currentStatus.test_response}"
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
 
                   <div className="pt-3 border-t border-white/5 flex items-center justify-between">
@@ -865,7 +892,7 @@ export default function SettingsPage({ onNavigate = () => {} }) {
                       className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-xs text-slate-200 font-medium transition-colors"
                     >
                       <RefreshCw className={`w-3.5 h-3.5 ${isTesting ? 'animate-spin text-cyan-400' : 'text-slate-400'}`} />
-                      <span>{isTesting ? 'Testing...' : (svc.service === 'email' ? 'Test Email Connection' : 'Test Connection')}</span>
+                      <span>{isTesting ? 'Testing...' : (svc.service === 'email' ? 'Test Email Connection' : (svc.service === 'llm' || svc.service === 'ollama' ? 'Test LLM Connection' : 'Test Connection'))}</span>
                     </button>
                   </div>
                 </motion.div>

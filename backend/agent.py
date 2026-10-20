@@ -31,8 +31,17 @@ if sys.platform == "win32":
 
 # LangChain & LangGraph imports
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage, SystemMessage
-from langchain_ollama import ChatOllama
 from langgraph.prebuilt import create_react_agent
+
+# LLM Provider Layer
+from backend.llm_provider import (
+    get_chat_llm,
+    get_active_model_name,
+    get_llm_provider,
+    detect_ollama_model,
+    is_llm_available,
+    is_llm_configured
+)
 
 # Local tools
 from backend.tools import (
@@ -213,16 +222,15 @@ def get_agent(
     preferences: Optional[Dict[str, str]] = None,
     custom_prompt: Optional[str] = None
 ):
-    """Initializes and returns the LangGraph ReAct agent and active model."""
-    base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-    preferred_model = model_name or os.getenv("OLLAMA_MODEL", "llama3.1")
-    active_model = detect_ollama_model(base_url, preferred_model)
+    """Initializes and returns the LangGraph ReAct agent and active model via LLM Provider Layer."""
+    prov = get_llm_provider()
+    active_model = model_name or get_active_model_name(prov)
     prompt_text = make_system_prompt(preferences, custom_prompt)
 
-    llm = ChatOllama(
-        model=active_model,
-        base_url=base_url,
-        temperature=0.1,
+    llm = get_chat_llm(
+        provider=prov,
+        model_name=active_model,
+        temperature=0.1
     )
 
     agent = create_react_agent(
@@ -234,7 +242,7 @@ def get_agent(
     return agent, active_model, llm
 
 
-def generate_research_queries(prompt: str, llm: ChatOllama, current_year: int) -> List[str]:
+def generate_research_queries(prompt: str, llm: Any, current_year: int) -> List[str]:
     """
     Uses the LLM to generate 3-5 distinct search queries covering different angles.
     Falls back to intelligent rule-based queries if needed.
@@ -300,7 +308,26 @@ def stream_agent_steps(
     - type: 'tool_result'       -> Tool execution result
     - type: 'final_answer'      -> Structured final synthesized answer with sources & confidence note
     """
-    agent, active_model, llm = get_agent(preferences=preferences, custom_prompt=custom_system_prompt)
+    try:
+        agent, active_model, llm = get_agent(preferences=preferences, custom_prompt=custom_system_prompt)
+    except Exception as init_err:
+        err_str = str(init_err)
+        prov = get_llm_provider()
+        if prov == "ollama" or "No LLM available" in err_str or "unreachable" in err_str or "refused" in err_str:
+            yield {
+                "type": "error",
+                "error": "No LLM available on this server. Set LLM_PROVIDER and an API key.",
+                "message": "No LLM available on this server. Set LLM_PROVIDER and an API key.",
+                "guidance": "On Render or cloud hosts, set LLM_PROVIDER=groq and GROQ_API_KEY, or LLM_PROVIDER=gemini and GEMINI_API_KEY."
+            }
+        else:
+            yield {
+                "type": "error",
+                "error": f"LLM Initialization Error ({prov}): {err_str}",
+                "message": f"LLM Initialization Error ({prov}): {err_str}",
+                "guidance": "Set LLM_PROVIDER and an API key in your server environment."
+            }
+        return
 
     mode_label = "Deep Research (Multi-round)" if deep_research else "Quick Research"
     yield {
@@ -733,11 +760,21 @@ Format with clean Markdown. Be direct, authoritative, and helpful."""
         }
 
     except Exception as e:
-        yield {
-            "type": "error",
-            "error": str(e),
-            "message": f"Agent encountered an error: {str(e)}"
-        }
+        err_str = str(e)
+        prov = get_llm_provider()
+        if "connection" in err_str.lower() or "unreachable" in err_str.lower() or "refused" in err_str.lower() or "11434" in err_str:
+            yield {
+                "type": "error",
+                "error": "No LLM available on this server. Set LLM_PROVIDER and an API key.",
+                "message": "No LLM available on this server. Set LLM_PROVIDER and an API key.",
+                "guidance": "On Render or cloud hosts, set LLM_PROVIDER=groq and GROQ_API_KEY, or LLM_PROVIDER=gemini and GEMINI_API_KEY."
+            }
+        else:
+            yield {
+                "type": "error",
+                "error": err_str,
+                "message": f"Agent encountered an error: {err_str}"
+            }
 
 
 def run_agent_cli():

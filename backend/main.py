@@ -58,7 +58,14 @@ from backend.db import (
     get_template_by_id_from_db,
     save_custom_template_to_db,
 )
-from backend.agent import stream_agent_steps, detect_ollama_model
+from backend.agent import stream_agent_steps
+from backend.llm_provider import (
+    get_llm_provider,
+    get_active_model_name,
+    is_llm_configured,
+    is_llm_available,
+    detect_ollama_model
+)
 from backend.tools import WORKSPACE_PATH
 from backend.approvals import approval_manager
 from backend.scheduler import (
@@ -256,18 +263,38 @@ class SaveCustomTemplateRequest(BaseModel):
 
 @app.get("/api/health")
 async def health_check():
-    """Health check endpoint displaying Ollama model status and workspace details."""
-    base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-    preferred_model = os.getenv("OLLAMA_MODEL", "llama3.1")
-    active_model = detect_ollama_model(base_url, preferred_model)
-    
+    """Health check endpoint displaying active LLM provider and integration status (no secrets)."""
+    prov = get_llm_provider()
+    model = get_active_model_name(prov)
+    llm_conf = is_llm_configured(prov)
+
+    email_user = (os.getenv("EMAIL_USER") or os.getenv("GMAIL_EMAIL") or "").strip()
+    email_pass = (os.getenv("EMAIL_PASS") or os.getenv("GMAIL_APP_PASSWORD") or "").strip()
+    email_conf = bool(email_user and email_pass)
+
+    bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    telegram_conf = bool(bot_token)
+
     workspace_files_count = len(list(WORKSPACE_PATH.glob("*")))
-    
+
     return {
         "status": "healthy",
         "app": "AgentFlow",
-        "ollama_base_url": base_url,
-        "active_model": active_model,
+        "llm_provider": prov,
+        "active_model": model,
+        "integrations": {
+            "llm": {
+                "provider": prov,
+                "model": model,
+                "configured": llm_conf
+            },
+            "email": {
+                "configured": email_conf
+            },
+            "telegram": {
+                "configured": telegram_conf
+            }
+        },
         "workspace_path": str(WORKSPACE_PATH),
         "workspace_files_count": workspace_files_count,
         "server_time": time.strftime("%Y-%m-%d %H:%M:%S")

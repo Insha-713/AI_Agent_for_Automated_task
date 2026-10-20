@@ -196,6 +196,32 @@ Access the application at **[http://localhost:8000](http://localhost:8000)**.
 
 ---
 
+### Option C: Cloud Deployment (Render / Cloud Hosts)
+
+Ollama does not exist on cloud hosting platforms like Render. AgentFlow provides an **LLM Provider Layer** that lets you switch between local Ollama and cloud AI models (Groq, Google Gemini) via environment variables at call time.
+
+#### Variables to Add on Render:
+
+| Variable | Required | Description | Example / Recommended Value |
+| :--- | :--- | :--- | :--- |
+| `LLM_PROVIDER` | **Yes** | Active cloud provider (`groq` or `gemini`) | `groq` |
+| `GROQ_API_KEY` | If using Groq | Free API Key from [console.groq.com](https://console.groq.com) | *(Your secret API key)* |
+| `GEMINI_API_KEY` | If using Gemini| Free API Key from [aistudio.google.com](https://aistudio.google.com) | *(Your secret API key)* |
+| `LLM_MODEL` | Optional | Custom model name | `llama-3.3-70b-versatile` or `gemini-1.5-flash` |
+| `WORKSPACE_DIR` | Optional | Local storage folder for files | `workspace` |
+| `EMAIL_USER` | Optional | Gmail address for sending emails | `your-email@gmail.com` |
+| `EMAIL_PASS` | Optional | 16-char Google App Password | `abcd efgh ijkl mnop` |
+| `TELEGRAM_BOT_TOKEN` | Optional | Bot token from @BotFather | `123456789:ABCDefgh...` |
+| `TELEGRAM_CHAT_ID` | Optional | Your Telegram chat ID | `987654321` |
+
+> **Note on Render Setup**:
+> 1. Set **Build Command**: `pip install -r requirements.txt && npm --prefix frontend install && npm --prefix frontend run build`
+> 2. Set **Start Command**: `uvicorn backend.main:app --host 0.0.0.0 --port $PORT`
+> 3. Under **Environment Variables**, add `LLM_PROVIDER=groq` and `GROQ_API_KEY=...` (or `LLM_PROVIDER=gemini` and `GEMINI_API_KEY=...`).
+> 4. If no LLM is configured or available, AgentFlow displays a clear notice: *"No LLM available on this server. Set LLM_PROVIDER and an API key."* and seamlessly executes all tool-only workflows without failing.
+
+---
+
 ## 🧪 Automated Verification Test Suite
 
 AgentFlow includes comprehensive verification scripts for all autonomous stages:

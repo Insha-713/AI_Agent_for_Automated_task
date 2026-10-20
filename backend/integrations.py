@@ -18,7 +18,13 @@ from typing import Dict, Any, List, Optional
 import requests
 from dotenv import load_dotenv
 
-from backend.agent import detect_ollama_model
+from backend.llm_provider import (
+    test_llm_connection,
+    get_llm_provider,
+    get_active_model_name,
+    is_llm_configured,
+    detect_ollama_model
+)
 from backend.tools import WORKSPACE_PATH, USER_AGENT
 from backend.reports import get_available_sample_datasets
 
@@ -37,52 +43,14 @@ IST = timezone(timedelta(hours=5, minutes=30))
 # Real-Time Integration Connection Testers
 # ==========================================
 
+def test_llm_integration() -> Dict[str, Any]:
+    """Tests connection to active LLM provider (Ollama local, Groq cloud, or Google Gemini cloud)."""
+    return test_llm_connection()
+
+
 def test_ollama_integration() -> Dict[str, Any]:
-    """Tests connection to local Ollama inference server."""
-    base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
-    preferred_model = os.getenv("OLLAMA_MODEL", "llama3.1")
-    t0 = time.perf_counter()
-
-    try:
-        resp = requests.get(f"{base_url}/api/tags", timeout=3)
-        latency_ms = round((time.perf_counter() - t0) * 1000, 1)
-
-        if resp.status_code == 200:
-            data = resp.json()
-            models = [m.get("name", "") for m in data.get("models", [])]
-            active = preferred_model if preferred_model in models else (models[0] if models else "None")
-            return {
-                "service": "ollama",
-                "display_name": "Ollama Local LLM",
-                "status": "connected",
-                "latency_ms": latency_ms,
-                "endpoint": base_url,
-                "active_model": active,
-                "installed_models": models,
-                "message": f"Connected to Ollama! Found {len(models)} local models. Active: {active}",
-                "guidance": ""
-            }
-        else:
-            return {
-                "service": "ollama",
-                "display_name": "Ollama Local LLM",
-                "status": "error",
-                "latency_ms": latency_ms,
-                "endpoint": base_url,
-                "message": f"Ollama returned HTTP status {resp.status_code}",
-                "guidance": "Ensure Ollama is running and accessible at " + base_url
-            }
-    except Exception as e:
-        latency_ms = round((time.perf_counter() - t0) * 1000, 1)
-        return {
-            "service": "ollama",
-            "display_name": "Ollama Local LLM",
-            "status": "offline",
-            "latency_ms": latency_ms,
-            "endpoint": base_url,
-            "message": "Cannot reach Ollama on " + base_url,
-            "guidance": "Install and run Ollama with: 'ollama run llama3.1' or start it with 'ollama serve'."
-        }
+    """Backwards-compatible alias for test_llm_integration."""
+    return test_llm_connection()
 
 
 def test_telegram_integration() -> Dict[str, Any]:
@@ -321,22 +289,30 @@ def test_workspace_integration() -> Dict[str, Any]:
 def test_integration_by_name(service: str) -> Dict[str, Any]:
     """Dispatches test for a specific integration service."""
     testers = {
-        "ollama": test_ollama_integration,
+        "llm": test_llm_integration,
+        "ollama": test_llm_integration,
+        "groq": test_llm_integration,
+        "gemini": test_llm_integration,
         "telegram": test_telegram_integration,
         "email": test_email_integration,
         "search": test_search_integration,
         "news": test_news_integration,
         "workspace": test_workspace_integration,
     }
-    tester = testers.get(service.lower())
+    s_clean = service.lower().strip()
+    tester = testers.get(s_clean)
     if not tester:
         return {"service": service, "status": "unknown", "message": f"No test available for '{service}'."}
-    return tester()
+    res = tester()
+    # Preserve service key name if caller explicitly requested "ollama"
+    if s_clean == "ollama":
+        res["service"] = "ollama"
+    return res
 
 
 def get_all_integrations_summary() -> Dict[str, Any]:
     """Returns quick status of all integrations."""
-    services = ["ollama", "telegram", "email", "search", "news", "workspace"]
+    services = ["llm", "telegram", "email", "search", "news", "workspace"]
     results = [test_integration_by_name(s) for s in services]
     connected_count = sum(1 for r in results if r.get("status") == "connected")
 
