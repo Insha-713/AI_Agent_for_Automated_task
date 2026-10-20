@@ -107,14 +107,20 @@ class ApprovalManager:
     def resolve_approval(self, approval_id: str, decision: str) -> bool:
         """
         Resolves a pending approval with 'approve' or 'reject' and unblocks the waiting agent.
+        Guarantees idempotence: repeated resolutions with the same decision return True.
         """
+        decision_clean = decision.lower().strip()
         with self._lock:
             entry = self._pending.get(approval_id)
             if not entry:
                 return False
 
-            entry["decision"] = decision
-            entry["status"] = decision
+            if entry.get("decision") == decision_clean:
+                # Already resolved idempotently
+                return True
+
+            entry["decision"] = decision_clean
+            entry["status"] = decision_clean
             if "event" in entry and entry["event"]:
                 try:
                     entry["event"].set()
@@ -129,9 +135,15 @@ class ApprovalManager:
             if entry:
                 return {
                     "id": entry["id"],
+                    "approval_id": entry["id"],
+                    "workflow_id": entry.get("workflow_id") or entry.get("task_id"),
                     "task_id": entry.get("task_id") or entry.get("workflow_id"),
-                    "action_type": entry.get("action_type", entry.get("tool")),
-                    "tool_name": entry.get("tool_name", entry.get("tool")),
+                    "run_id": entry.get("run_id"),
+                    "step_id": entry.get("step_id"),
+                    "name": entry.get("name", ""),
+                    "action_type": entry.get("action_type", entry.get("tool", "")),
+                    "tool": entry.get("tool", entry.get("tool_name", "")),
+                    "tool_name": entry.get("tool_name", entry.get("tool", "")),
                     "parameters": entry.get("parameters", {}),
                     "details": entry.get("details", ""),
                     "status": entry.get("status", "pending"),
@@ -140,6 +152,58 @@ class ApprovalManager:
                     "created_at": entry.get("created_at")
                 }
             return None
+
+    def get_pending_by_workflow(self, workflow_id: str) -> Optional[Dict[str, Any]]:
+        """Returns active pending approval for a specific workflow ID, if any."""
+        with self._lock:
+            for entry in self._pending.values():
+                entry_wf = entry.get("workflow_id") or entry.get("task_id")
+                if entry_wf == workflow_id and entry.get("status") == "pending":
+                    return {
+                        "id": entry["id"],
+                        "approval_id": entry["id"],
+                        "workflow_id": entry_wf,
+                        "task_id": entry_wf,
+                        "run_id": entry.get("run_id"),
+                        "step_id": entry.get("step_id"),
+                        "name": entry.get("name", ""),
+                        "action_type": entry.get("action_type", entry.get("tool", "")),
+                        "tool": entry.get("tool", entry.get("tool_name", "")),
+                        "tool_name": entry.get("tool_name", entry.get("tool", "")),
+                        "parameters": entry.get("parameters", {}),
+                        "details": entry.get("details", ""),
+                        "status": entry.get("status", "pending"),
+                        "decision": entry.get("decision"),
+                        "dry_run": entry.get("dry_run", False),
+                        "created_at": entry.get("created_at")
+                    }
+            return None
+
+    def get_all_pending(self) -> List[Dict[str, Any]]:
+        """Returns all currently pending approvals."""
+        results = []
+        with self._lock:
+            for entry in self._pending.values():
+                if entry.get("status") == "pending":
+                    results.append({
+                        "id": entry["id"],
+                        "approval_id": entry["id"],
+                        "workflow_id": entry.get("workflow_id") or entry.get("task_id"),
+                        "task_id": entry.get("task_id") or entry.get("workflow_id"),
+                        "run_id": entry.get("run_id"),
+                        "step_id": entry.get("step_id"),
+                        "name": entry.get("name", ""),
+                        "action_type": entry.get("action_type", entry.get("tool", "")),
+                        "tool": entry.get("tool", entry.get("tool_name", "")),
+                        "tool_name": entry.get("tool_name", entry.get("tool", "")),
+                        "parameters": entry.get("parameters", {}),
+                        "details": entry.get("details", ""),
+                        "status": entry.get("status", "pending"),
+                        "decision": entry.get("decision"),
+                        "dry_run": entry.get("dry_run", False),
+                        "created_at": entry.get("created_at")
+                    })
+        return results
 
 
 # Global ApprovalManager singleton

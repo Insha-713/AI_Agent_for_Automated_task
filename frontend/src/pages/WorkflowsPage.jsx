@@ -296,6 +296,12 @@ export default function WorkflowsPage({ onOpenIntegrations = () => {} }) {
             if (data && data.plan) {
               setCurrentPlan(data.plan);
               setSelectedHistoryWorkflow(data);
+              if (data.pending_approval) {
+                setPendingApproval(data.pending_approval);
+                if (data.pending_approval.step_id) {
+                  setActiveStepId(data.pending_approval.step_id);
+                }
+              }
             }
           })
           .catch(() => {});
@@ -352,6 +358,25 @@ export default function WorkflowsPage({ onOpenIntegrations = () => {} }) {
     window.addEventListener('popstate', handleUrlChange);
     return () => window.removeEventListener('popstate', handleUrlChange);
   }, []);
+
+  // Recover active pending approval when workflow plan is loaded or on refresh
+  useEffect(() => {
+    if (!currentPlan || !currentPlan.workflow_id) return;
+    fetch(`/api/workflows/${currentPlan.workflow_id}/pending-approval`)
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (data && (data.approval_id || data.id)) {
+          setPendingApproval({
+            ...data,
+            approval_id: data.approval_id || data.id
+          });
+          if (data.step_id) {
+            setActiveStepId(data.step_id);
+          }
+        }
+      })
+      .catch(() => {});
+  }, [currentPlan?.workflow_id]);
 
   const handleDeduplicate = async () => {
     setIsDeduplicating(true);
@@ -567,6 +592,8 @@ export default function WorkflowsPage({ onOpenIntegrations = () => {} }) {
             };
           });
           setLogs((prev) => [...prev, `[${timestamp}] ⏭️ Step [${data.step_id}] SKIPPED: ${data.reason}`]);
+        } else if (data.type === 'heartbeat') {
+          // Keep-alive heartbeat from backend while awaiting approval
         } else if (data.type === 'approval_required') {
           setPendingApproval(data);
           setActiveStepId(data.step_id);
@@ -580,8 +607,11 @@ export default function WorkflowsPage({ onOpenIntegrations = () => {} }) {
           });
           setLogs((prev) => [
             ...prev,
-            `[${timestamp}] ⚠️ RUN PAUSED: Human approval required for step [${data.step_id}] (${data.name}). Please review parameters and choose Approve or Reject below.`
+            `[${timestamp}] ⚠️ RUN PAUSED: Human approval required for step [${data.step_id}] (${data.name}). Please review parameters and choose Approve or Reject.`
           ]);
+          setTimeout(() => {
+            document.getElementById('human-approval-card')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          }, 100);
         } else if (data.type === 'approval_resolved') {
           setPendingApproval(null);
           setLogs((prev) => [
@@ -634,9 +664,12 @@ export default function WorkflowsPage({ onOpenIntegrations = () => {} }) {
     };
 
     es.onerror = () => {
-      setPendingApproval(null);
-      setIsRunning(false);
-      setActiveStepId(null);
+      // Do NOT erase pendingApproval if currently waiting for human decision!
+      // This preserves the card and Approve/Reject buttons if the network or proxy times out.
+      if (!pendingApproval) {
+        setIsRunning(false);
+        setActiveStepId(null);
+      }
       es.close();
     };
   };
@@ -716,21 +749,47 @@ export default function WorkflowsPage({ onOpenIntegrations = () => {} }) {
     }
   };
 
-  const handleResolveApproval = async (decision) => {
-    if (!pendingApproval) return;
+  const handleResolveApproval = async (decision, apprId) => {
+    const approvalIdToUse = apprId || pendingApproval?.approval_id || pendingApproval?.id;
+    if (!approvalIdToUse) return;
+
     setIsResolvingApproval(true);
+    const timestamp = new Date().toLocaleTimeString();
+
+    // Log decision immediately in UI
+    setLogs((prev) => [
+      ...prev,
+      `[${timestamp}] ⚖️ Human Approval decision recorded: ${decision.toUpperCase()}`
+    ]);
+
     try {
-      const res = await fetch(`/api/approvals/${pendingApproval.approval_id}`, {
+      const res = await fetch(`/api/approvals/${approvalIdToUse}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ decision })
       });
+
       if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.detail || 'Failed to submit approval decision');
+        const err = await res.json().catch(() => ({}));
+        console.warn('Approval resolution notice:', err);
+      }
+
+      if (decision === 'reject') {
+        setPendingApproval(null);
+        setIsRunning(false);
+        setActiveStepId(null);
+        setRunResult({
+          status: 'cancelled',
+          duration_seconds: 0,
+          summary: 'Workflow execution was cancelled or rejected by user.',
+          step_outputs: [],
+          generated_files: [],
+          timestamp: new Date().toISOString()
+        });
+        fetchWorkflows();
       }
     } catch (err) {
-      setErrorMsg(err.message || 'Error resolving approval');
+      console.warn('Error resolving approval:', err);
     } finally {
       setIsResolvingApproval(false);
     }
@@ -1264,18 +1323,7 @@ export default function WorkflowsPage({ onOpenIntegrations = () => {} }) {
             </div>
           )}
 
-          {/* Step Graph Canvas */}
-          <div className="glass-panel p-4 sm:p-5 rounded-3xl border border-white/10 shadow-xl">
-            <WorkflowGraph
-              steps={currentPlan.steps || []}
-              activeStepId={activeStepId}
-              selectedStepId={selectedStep ? selectedStep.id : null}
-              onSelectStep={(s) => setSelectedStep(s)}
-              onOpenIntegrations={onOpenIntegrations}
-            />
-          </div>
-
-          {/* Large, Prominent Human Approval Card */}
+          {/* Large, Prominent Human Approval Card (Rendered at top of pipeline when pending) */}
           {pendingApproval && (
             <ApprovalCard 
               approval={pendingApproval} 
@@ -1283,6 +1331,19 @@ export default function WorkflowsPage({ onOpenIntegrations = () => {} }) {
               dryRun={dryRun} 
             />
           )}
+
+          {/* Step Graph Canvas */}
+          <div className="glass-panel p-4 sm:p-5 rounded-3xl border border-white/10 shadow-xl">
+            <WorkflowGraph
+              steps={currentPlan.steps || []}
+              activeStepId={activeStepId}
+              selectedStepId={selectedStep ? selectedStep.id : null}
+              pendingApproval={pendingApproval}
+              onResolveApproval={handleResolveApproval}
+              onSelectStep={(s) => setSelectedStep(s)}
+              onOpenIntegrations={onOpenIntegrations}
+            />
+          </div>
 
           {/* Collapsible Live Activity Logs Panel */}
           <div className="glass-panel rounded-2xl border border-white/10 overflow-hidden shadow-lg">

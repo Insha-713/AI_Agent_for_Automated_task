@@ -58,6 +58,8 @@ from backend.db import (
     create_workflow_run_record,
     update_workflow_run_record,
     get_workflow_by_id,
+    create_approval_record,
+    resolve_approval_record,
 )
 
 load_dotenv()
@@ -1394,6 +1396,18 @@ class WorkflowExecutionEngine:
                     "created_at": datetime.now().isoformat()
                 }
                 approval_manager.register_pending(approval_record)
+                try:
+                    await create_approval_record(
+                        approval_id=approval_id,
+                        task_id=self.workflow_id,
+                        action_type=tool_name,
+                        tool_name=tool_name,
+                        parameters=resolved_params,
+                        details=approval_record["details"]
+                    )
+                except Exception as e:
+                    print(f"[Workflows] Warning: failed to save approval to DB: {e}")
+
                 await update_workflow_status(self.workflow_id, "waiting_for_approval")
 
                 # Yield approval_required SSE event with fully rendered parameters for user inspection
@@ -1420,6 +1434,7 @@ class WorkflowExecutionEngine:
                 # Does NOT block the asyncio event loop so POST /api/approvals/{id} resolves immediately
                 timeout = 300.0
                 start_wait = time.time()
+                last_ping = time.time()
                 decision = None
 
                 while time.time() - start_wait < timeout:
@@ -1433,10 +1448,26 @@ class WorkflowExecutionEngine:
                         decision = rec.get("decision")
                         break
 
+                    # Keep-alive heartbeat every 5s prevents Vercel and Render edge proxy timeouts
+                    if time.time() - last_ping >= 5.0:
+                        yield {
+                            "type": "heartbeat",
+                            "workflow_id": self.workflow_id,
+                            "approval_id": approval_id,
+                            "step_id": step_id,
+                            "status": "waiting_for_approval",
+                            "timestamp": datetime.now().isoformat()
+                        }
+                        last_ping = time.time()
+
                     await asyncio.sleep(0.5)
 
                 if decision == "approve":
                     await update_workflow_status(self.workflow_id, "running")
+                    try:
+                        await resolve_approval_record(approval_id, "approve")
+                    except Exception:
+                        pass
                     yield {
                         "type": "approval_resolved",
                         "approval_id": approval_id,
@@ -1450,6 +1481,10 @@ class WorkflowExecutionEngine:
                     })
                 else:
                     await update_workflow_status(self.workflow_id, "cancelled")
+                    try:
+                        await resolve_approval_record(approval_id, "reject")
+                    except Exception:
+                        pass
                     yield {
                         "type": "approval_resolved",
                         "approval_id": approval_id,

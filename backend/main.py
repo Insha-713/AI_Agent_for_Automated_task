@@ -922,17 +922,36 @@ async def instantiate_workflow_from_template(template_id: str):
 @app.post("/api/approvals/{approval_id}")
 async def resolve_approval_endpoint(approval_id: str, req: ApprovalDecisionRequest):
     """Resolves a human-in-the-loop approval request with 'approve' or 'reject'."""
+    clean_id = approval_id.strip()
+    if not clean_id or len(clean_id) < 3:
+        raise HTTPException(status_code=400, detail="Invalid approval ID format.")
+
     decision = req.decision.lower().strip()
     if decision not in ("approve", "reject"):
         raise HTTPException(status_code=400, detail="Decision must be 'approve' or 'reject'.")
 
-    success = approval_manager.resolve_approval(approval_id, decision)
-    await resolve_approval_record(approval_id, decision)
+    success = approval_manager.resolve_approval(clean_id, decision)
+    await resolve_approval_record(clean_id, decision)
 
     if not success:
+        # Check if already resolved in DB
+        db_appr = await get_approval_by_id(clean_id)
+        if db_appr and db_appr.get("status") in ("approve", "reject", "approved", "rejected"):
+            return {
+                "status": "success",
+                "approval_id": clean_id,
+                "decision": db_appr.get("status"),
+                "already_resolved": True
+            }
         raise HTTPException(status_code=404, detail="Approval request not found or expired.")
 
-    return {"status": "success", "approval_id": approval_id, "decision": decision}
+    return {"status": "success", "approval_id": clean_id, "decision": decision}
+
+
+@app.get("/api/approvals/pending")
+async def list_pending_approvals():
+    """Returns all currently active pending human approvals."""
+    return {"pending_approvals": approval_manager.get_all_pending()}
 
 
 @app.get("/api/approvals/{approval_id}")
@@ -1050,7 +1069,7 @@ async def clear_all_workflows_endpoint(status: Optional[str] = Query(None)):
 
 @app.get("/api/workflows/{workflow_id}")
 async def get_workflow_details(workflow_id: str):
-    """Retrieves full workflow details and past execution runs."""
+    """Retrieves full workflow details, active pending approval, and past execution runs."""
     wf = await get_workflow_by_id(workflow_id)
     if not wf:
         raise HTTPException(status_code=404, detail=f"Workflow '{workflow_id}' not found.")
@@ -1061,7 +1080,38 @@ async def get_workflow_details(workflow_id: str):
     except Exception:
         wf_dict["plan"] = {}
     wf_dict["runs"] = runs
+
+    # Check for active pending approval
+    pending = approval_manager.get_pending_by_workflow(workflow_id)
+    wf_dict["pending_approval"] = pending
     return wf_dict
+
+
+@app.get("/api/workflows/{workflow_id}/pending-approval")
+async def get_workflow_pending_approval(workflow_id: str):
+    """Returns the active pending approval for a given workflow, if any."""
+    pending = approval_manager.get_pending_by_workflow(workflow_id)
+    if pending:
+        return pending
+
+    # Fallback to database lookup
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT * FROM approvals WHERE task_id = ? AND status = 'pending' ORDER BY created_at DESC LIMIT 1",
+            (workflow_id,)
+        )
+        row = await cursor.fetchone()
+        if row:
+            d = dict(row)
+            try:
+                d["parameters"] = json.loads(d.get("parameters", "{}"))
+            except Exception:
+                d["parameters"] = {}
+            d["approval_id"] = d["id"]
+            d["workflow_id"] = workflow_id
+            return d
+
+    return {"pending": False, "approval_id": None}
 
 
 @app.delete("/api/workflows/{workflow_id}")

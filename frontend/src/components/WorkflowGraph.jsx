@@ -8,7 +8,7 @@ import {
   FileText, 
   Folder, 
   Mail, 
-  Send,
+  Send, 
   CloudRain,
   CheckCircle2, 
   AlertCircle, 
@@ -22,7 +22,9 @@ import {
   RotateCw,
   HelpCircle,
   FileCheck,
-  AlertTriangle
+  AlertTriangle,
+  Check,
+  X
 } from 'lucide-react';
 
 const TOOL_ICONS = {
@@ -67,10 +69,13 @@ export default function WorkflowGraph({
   steps = [], 
   activeStepId = null, 
   selectedStepId = null,
+  pendingApproval = null,
+  onResolveApproval = null,
   onSelectStep = () => {},
   onOpenIntegrations = () => {}
 }) {
   const [expandedStepIds, setExpandedStepIds] = useState({});
+  const [submittingDecision, setSubmittingDecision] = useState(null);
 
   const toggleExpand = (e, sid) => {
     e.stopPropagation();
@@ -245,6 +250,136 @@ export default function WorkflowGraph({
                     >
                       View Details
                     </button>
+                  </div>
+                )}
+
+                {/* Pending Approval In-Step Action Card */}
+                {isWaitingApproval && (
+                  <div className="mt-3 p-4 rounded-xl bg-amber-950/70 border-2 border-amber-400 text-xs space-y-3 shadow-lg shadow-amber-500/10 animate-in fade-in duration-200">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <ShieldAlert className="w-4 h-4 text-amber-300 animate-pulse flex-shrink-0" />
+                        <span className="font-bold text-amber-200 uppercase tracking-wide text-xs">
+                          Action Paused: Human Approval Required
+                        </span>
+                      </div>
+                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-400 text-black font-extrabold uppercase tracking-widest animate-pulse">
+                        AWAITING YOU
+                      </span>
+                    </div>
+
+                    <p className="text-slate-300 text-xs">
+                      AgentFlow requires your permission before executing <code className="text-cyan-300 font-mono px-1 rounded bg-black/40">{step.tool}</code>.
+                    </p>
+
+                    {/* Preview key target */}
+                    {step.tool === 'send_email' && (
+                      <div className="p-2.5 rounded-lg bg-black/50 border border-white/10 text-xs space-y-1">
+                        <div className="flex items-center gap-2">
+                          <span className="text-slate-400 font-medium">To:</span>
+                          <span className="text-white font-mono font-bold truncate">
+                            {pendingApproval?.parameters?.to_email || pendingApproval?.parameters?.receiver || step.params?.to_email || step.params?.receiver || 'inshaf713@gmail.com'}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-slate-400 font-medium">Subject:</span>
+                          <span className="text-slate-200 truncate font-medium">
+                            {pendingApproval?.parameters?.subject || step.params?.subject || 'Weather Report'}
+                          </span>
+                        </div>
+                      </div>
+                    )}
+
+                    {step.tool === 'save_file' && (
+                      <div className="p-2 rounded-lg bg-black/50 border border-white/10 text-xs">
+                        <span className="text-slate-400 font-medium">Target: </span>
+                        <span className="text-cyan-300 font-mono font-bold">
+                          {pendingApproval?.parameters?.filename || step.params?.filename || 'workspace/output.txt'}
+                        </span>
+                      </div>
+                    )}
+
+                    {step.tool === 'send_telegram_message' && (
+                      <div className="p-2 rounded-lg bg-black/50 border border-white/10 text-xs">
+                        <span className="text-slate-400 font-medium">Telegram Chat: </span>
+                        <span className="text-cyan-300 font-mono font-bold">
+                          {pendingApproval?.parameters?.chat_id || step.params?.chat_id || 'Default Chat'}
+                        </span>
+                      </div>
+                    )}
+
+                    {/* In-Step Action Buttons */}
+                    <div className="pt-1 flex flex-wrap items-center justify-end gap-2.5">
+                      <button
+                        type="button"
+                        onClick={async (e) => {
+                          e.stopPropagation();
+                          if (submittingDecision) return;
+                          setSubmittingDecision('reject');
+                          try {
+                            const apprId = pendingApproval?.approval_id || pendingApproval?.id;
+                            if (apprId) {
+                              await fetch(`/api/approvals/${apprId}`, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ decision: 'reject' })
+                              });
+                            }
+                            if (onResolveApproval) {
+                              await onResolveApproval('reject', apprId);
+                            }
+                          } catch (err) {
+                            console.error('Error resolving approval:', err);
+                          } finally {
+                            setSubmittingDecision(null);
+                          }
+                        }}
+                        disabled={!!submittingDecision}
+                        className="px-4 py-2 rounded-xl bg-rose-500/20 hover:bg-rose-500/30 active:bg-rose-500/40 text-rose-300 hover:text-white border border-rose-500/40 text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-50"
+                      >
+                        {submittingDecision === 'reject' ? (
+                          <RotateCw className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <X className="w-3.5 h-3.5" />
+                        )}
+                        <span>Reject Step</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={async (e) => {
+                          e.stopPropagation();
+                          if (submittingDecision) return;
+                          setSubmittingDecision('approve');
+                          try {
+                            const apprId = pendingApproval?.approval_id || pendingApproval?.id;
+                            if (apprId) {
+                              await fetch(`/api/approvals/${apprId}`, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ decision: 'approve' })
+                              });
+                            }
+                            if (onResolveApproval) {
+                              await onResolveApproval('approve', apprId);
+                            }
+                          } catch (err) {
+                            console.error('Error resolving approval:', err);
+                          } finally {
+                            setSubmittingDecision(null);
+                          }
+                        }}
+                        disabled={!!submittingDecision}
+                        className="px-5 py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 hover:from-emerald-400 hover:to-cyan-400 text-white text-xs font-bold flex items-center gap-1.5 shadow-md shadow-emerald-500/30 transition-all hover:scale-[1.02] cursor-pointer disabled:opacity-50"
+                      >
+                        {submittingDecision === 'approve' ? (
+                          <RotateCw className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <Check className="w-3.5 h-3.5" />
+                        )}
+                        <span>Approve &amp; Continue</span>
+                      </button>
+                    </div>
                   </div>
                 )}
 
