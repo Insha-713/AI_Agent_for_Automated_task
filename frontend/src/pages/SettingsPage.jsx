@@ -34,7 +34,9 @@ import {
   BarChart3,
   Activity,
   FileSpreadsheet,
-  X
+  X,
+  Edit2,
+  Trash2
 } from 'lucide-react';
 
 const DEFAULT_SERVICES = [
@@ -293,6 +295,14 @@ export default function SettingsPage({ onNavigate = () => {} }) {
     email: false,
     telegram: false
   });
+  const [credentialsSummary, setCredentialsSummary] = useState({
+    email: { configured: false, email_user: '', has_password: false, masked_password: '' },
+    telegram: { configured: false, has_token: false, masked_token: '', chat_id: '' }
+  });
+  const [isEditingEmail, setIsEditingEmail] = useState(false);
+  const [isEditingTelegram, setIsEditingTelegram] = useState(false);
+  const [isSavingEmail, setIsSavingEmail] = useState(false);
+  const [isSavingTelegram, setIsSavingTelegram] = useState(false);
 
   // Workflow Templates State - Pre-seeded with FALLBACK_TEMPLATES so it NEVER renders 0
   const [templates, setTemplates] = useState(FALLBACK_TEMPLATES);
@@ -359,7 +369,32 @@ export default function SettingsPage({ onNavigate = () => {} }) {
       console.warn('Settings fetch error:', e);
     }
 
-    // 2. Fetch integrations status
+    // 2. Fetch credentials summary (masked)
+    try {
+      const cResp = await fetch('/api/integrations/credentials');
+      if (cResp.ok) {
+        const cData = await cResp.json();
+        setCredentialsSummary(cData);
+        if (cData.email?.configured) {
+          setSecrets(prev => ({ ...prev, email_user: cData.email.email_user || '' }));
+          setSavedIndicators(prev => ({ ...prev, email: true }));
+          setIsEditingEmail(false);
+        } else {
+          setIsEditingEmail(true);
+        }
+        if (cData.telegram?.configured) {
+          setSecrets(prev => ({ ...prev, telegram_chat_id: cData.telegram.chat_id || '' }));
+          setSavedIndicators(prev => ({ ...prev, telegram: true }));
+          setIsEditingTelegram(false);
+        } else {
+          setIsEditingTelegram(true);
+        }
+      }
+    } catch (e) {
+      console.warn('Credentials summary fetch error:', e);
+    }
+
+    // 3. Fetch integrations status
     try {
       const iResp = await fetch('/api/integrations/status');
       if (iResp.ok) {
@@ -389,27 +424,90 @@ export default function SettingsPage({ onNavigate = () => {} }) {
     }
   };
 
-  const handleSaveSecret = async (service) => {
+  const handleSaveEmailIntegration = async (e) => {
+    if (e) e.preventDefault();
+    if (!secrets.email_user || !secrets.email_user.includes('@')) {
+      setToast({ type: 'error', text: 'Please enter a valid Gmail address (e.g. user@gmail.com).' });
+      return;
+    }
+    setIsSavingEmail(true);
     try {
-      const payload = {};
-      if (service === 'email') {
-        if (secrets.email_user) payload['EMAIL_USER'] = secrets.email_user;
-        if (secrets.email_pass) payload['EMAIL_PASS'] = secrets.email_pass;
-      } else if (service === 'telegram') {
-        if (secrets.telegram_token) payload['TELEGRAM_BOT_TOKEN'] = secrets.telegram_token;
-        if (secrets.telegram_chat_id) payload['TELEGRAM_CHAT_ID'] = secrets.telegram_chat_id;
-      }
-      const res = await fetch('/api/settings', {
+      const resp = await fetch('/api/integrations/credentials/email', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ settings: payload })
+        body: JSON.stringify({
+          email_user: secrets.email_user,
+          email_pass: secrets.email_pass || undefined
+        })
       });
-      if (res.ok) {
-        setSavedIndicators(prev => ({ ...prev, [service]: true }));
-        setToast({ type: 'success', text: `Saved ${service} credentials securely in local environment!` });
+      const data = await resp.json();
+      if (resp.ok) {
+        setToast({ type: 'success', text: 'Email integration configured and saved persistently!' });
+        setSavedIndicators(prev => ({ ...prev, email: true }));
+        setIsEditingEmail(false);
+        setSecrets(prev => ({ ...prev, email_pass: '' }));
+        await fetchInitialData();
+      } else {
+        setToast({ type: 'error', text: data.detail || 'Failed to save email credentials.' });
       }
     } catch (err) {
-      setToast({ type: 'error', text: `Failed to save ${service} credentials.` });
+      setToast({ type: 'error', text: 'Network error saving email credentials.' });
+    } finally {
+      setIsSavingEmail(false);
+    }
+  };
+
+  const handleDisconnectEmail = async () => {
+    if (!window.confirm('Are you sure you want to disconnect your Gmail integration?')) return;
+    try {
+      const resp = await fetch('/api/integrations/credentials/email', { method: 'DELETE' });
+      if (resp.ok) {
+        setToast({ type: 'success', text: 'Email integration credentials removed.' });
+        setSecrets(prev => ({ ...prev, email_user: '', email_pass: '' }));
+        setSavedIndicators(prev => ({ ...prev, email: false }));
+        setIsEditingEmail(true);
+        await fetchInitialData();
+      }
+    } catch (err) {
+      console.warn('Disconnect error:', err);
+    }
+  };
+
+  const handleSaveTelegramIntegration = async (e) => {
+    if (e) e.preventDefault();
+    setIsSavingTelegram(true);
+    try {
+      const resp = await fetch('/api/integrations/credentials/telegram', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          telegram_token: secrets.telegram_token || undefined,
+          telegram_chat_id: secrets.telegram_chat_id || undefined
+        })
+      });
+      if (resp.ok) {
+        setToast({ type: 'success', text: 'Telegram integration configured and saved persistently!' });
+        setSavedIndicators(prev => ({ ...prev, telegram: true }));
+        setIsEditingTelegram(false);
+        setSecrets(prev => ({ ...prev, telegram_token: '' }));
+        await fetchInitialData();
+      } else {
+        const data = await resp.json();
+        setToast({ type: 'error', text: data.detail || 'Failed to save Telegram credentials.' });
+      }
+    } catch (err) {
+      setToast({ type: 'error', text: 'Network error saving Telegram credentials.' });
+    } finally {
+      setIsSavingTelegram(false);
+    }
+  };
+
+  const handleSaveSecret = async (service) => {
+    if (service === 'email') {
+      return handleSaveEmailIntegration();
+    }
+    if (service === 'telegram') {
+      return handleSaveTelegramIntegration();
     }
   };
 
@@ -738,121 +836,284 @@ export default function SettingsPage({ onNavigate = () => {} }) {
 
                     {/* Email Credentials & App Password */}
                     {svc.service === 'email' && (
-                      <div className="pt-2 border-t border-white/5 space-y-2">
-                        <div className="flex items-center justify-between text-[11px]">
-                          <span className="font-semibold text-slate-300 flex items-center gap-1">
-                            <Lock className="w-3 h-3 text-cyan-400" />
-                            <span>App Password &amp; Sender</span>
-                          </span>
-                          <a 
-                            href="https://myaccount.google.com/apppasswords" 
-                            target="_blank" 
-                            rel="noopener noreferrer"
-                            className="text-cyan-400 hover:text-cyan-300 flex items-center gap-0.5 text-[10px]"
-                          >
-                            <span>Google App Passwords</span>
-                            <ExternalLink className="w-2.5 h-2.5" />
-                          </a>
-                        </div>
+                      <div className="pt-2 border-t border-white/5 space-y-3">
+                        {credentialsSummary?.email?.configured && !isEditingEmail ? (
+                          /* Configured State View */
+                          <div className="p-3 rounded-xl bg-emerald-950/30 border border-emerald-500/20 space-y-2.5">
+                            <div className="flex items-center justify-between">
+                              <span className="flex items-center gap-1.5 text-xs font-semibold text-emerald-300">
+                                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                                <span>Email integration configured</span>
+                              </span>
+                              <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-mono">
+                                {credentialsSummary?.email?.source === 'environment' ? 'ENV' : 'PERSISTENT'}
+                              </span>
+                            </div>
 
-                        <input
-                          type="email"
-                          placeholder="your.email@gmail.com"
-                          value={secrets.email_user}
-                          onChange={(e) => setSecrets({ ...secrets, email_user: e.target.value })}
-                          className="w-full bg-slate-950/60 text-slate-100 placeholder:text-slate-500 text-xs p-2 rounded-lg border border-white/10 outline-none focus:border-cyan-500 font-mono"
-                        />
+                            <div className="space-y-1 text-xs font-mono">
+                              <div className="flex items-center justify-between text-slate-300">
+                                <span className="text-slate-400">Account:</span>
+                                <span className="font-semibold text-slate-100">{credentialsSummary?.email?.email_user || secrets.email_user}</span>
+                              </div>
+                              <div className="flex items-center justify-between text-slate-300">
+                                <span className="text-slate-400">App Password:</span>
+                                <span className="tracking-widest text-emerald-400">••••••••••••••••</span>
+                              </div>
+                            </div>
 
-                        <div className="relative">
-                          <input
-                            type={showSecrets.email_pass ? 'text' : 'password'}
-                            placeholder="16-char App Password (e.g. abcd efgh ijkl mnop)"
-                            value={secrets.email_pass}
-                            onChange={(e) => setSecrets({ ...secrets, email_pass: e.target.value })}
-                            className="w-full bg-slate-950/60 text-slate-100 placeholder:text-slate-500 text-xs p-2 pr-8 rounded-lg border border-white/10 outline-none focus:border-cyan-500 font-mono"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => setShowSecrets({ ...showSecrets, email_pass: !showSecrets.email_pass })}
-                            className="absolute right-2 top-2 text-slate-400 hover:text-white"
-                            title={showSecrets.email_pass ? "Hide secret" : "Show secret"}
-                          >
-                            {showSecrets.email_pass ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                          </button>
-                        </div>
+                            <div className="pt-2 border-t border-white/5 flex items-center justify-between gap-2">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setIsEditingEmail(true);
+                                  setSecrets(prev => ({ ...prev, email_user: credentialsSummary?.email?.email_user || prev.email_user, email_pass: '' }));
+                                }}
+                                className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-white/5 hover:bg-white/10 text-slate-300 border border-white/10 text-xs font-medium transition-colors"
+                              >
+                                <Edit2 className="w-3 h-3 text-cyan-400" />
+                                <span>Edit / Update</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={handleDisconnectEmail}
+                                className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/20 text-xs font-medium transition-colors"
+                              >
+                                <Trash2 className="w-3 h-3 text-rose-400" />
+                                <span>Disconnect</span>
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          /* Edit / Setup Form */
+                          <div className="space-y-2.5">
+                            <div className="flex items-center justify-between text-[11px]">
+                              <span className="font-semibold text-slate-300 flex items-center gap-1">
+                                <Lock className="w-3 h-3 text-cyan-400" />
+                                <span>Configure Gmail Integration</span>
+                              </span>
+                              <a 
+                                href="https://myaccount.google.com/apppasswords" 
+                                target="_blank" 
+                                rel="noopener noreferrer"
+                                className="text-cyan-400 hover:text-cyan-300 flex items-center gap-0.5 text-[10px]"
+                              >
+                                <span>Google App Passwords</span>
+                                <ExternalLink className="w-2.5 h-2.5" />
+                              </a>
+                            </div>
 
-                        <div className="flex items-center justify-between pt-1">
-                          <span className="text-[10px] text-emerald-400 font-mono">
-                            {savedIndicators.email ? "Saved: ••••••••••••88" : "Saved in server .env"}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => handleSaveSecret('email')}
-                            className="px-2.5 py-1 rounded-md bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 border border-cyan-500/30 text-[11px] font-semibold transition-colors"
-                          >
-                            Save Secret
-                          </button>
-                        </div>
+                            <div>
+                              <label className="block text-[10px] text-slate-400 mb-1">Gmail Address</label>
+                              <input
+                                type="email"
+                                placeholder="your.email@gmail.com"
+                                value={secrets.email_user}
+                                onChange={(e) => setSecrets({ ...secrets, email_user: e.target.value })}
+                                className="w-full bg-slate-950/60 text-slate-100 placeholder:text-slate-500 text-xs p-2 rounded-lg border border-white/10 outline-none focus:border-cyan-500 font-mono"
+                              />
+                            </div>
+
+                            <div>
+                              <div className="flex items-center justify-between mb-1">
+                                <label className="block text-[10px] text-slate-400">16-character Google App Password</label>
+                                <span className={`text-[10px] font-mono ${(secrets.email_pass || '').replace(/\s+/g, '').length === 16 ? 'text-emerald-400' : 'text-slate-500'}`}>
+                                  {(secrets.email_pass || '').replace(/\s+/g, '').length === 16 ? '✓ 16 chars' : `${(secrets.email_pass || '').replace(/\s+/g, '').length}/16`}
+                                </span>
+                              </div>
+                              <div className="relative">
+                                <input
+                                  type={showSecrets.email_pass ? 'text' : 'password'}
+                                  placeholder="abcd efgh ijkl mnop"
+                                  value={secrets.email_pass}
+                                  onChange={(e) => setSecrets({ ...secrets, email_pass: e.target.value })}
+                                  className="w-full bg-slate-950/60 text-slate-100 placeholder:text-slate-500 text-xs p-2 pr-8 rounded-lg border border-white/10 outline-none focus:border-cyan-500 font-mono"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => setShowSecrets({ ...showSecrets, email_pass: !showSecrets.email_pass })}
+                                  className="absolute right-2 top-2 text-slate-400 hover:text-white"
+                                  title={showSecrets.email_pass ? "Hide secret" : "Show secret"}
+                                >
+                                  {showSecrets.email_pass ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                                </button>
+                              </div>
+                              <p className="text-[10px] text-slate-500 mt-1">Requires 2-Step Verification enabled on your Google account.</p>
+                            </div>
+
+                            <div className="flex items-center justify-between pt-1">
+                              {credentialsSummary?.email?.configured ? (
+                                <button
+                                  type="button"
+                                  onClick={() => setIsEditingEmail(false)}
+                                  className="px-2.5 py-1 rounded-md bg-white/5 hover:bg-white/10 text-slate-400 text-xs transition-colors"
+                                >
+                                  Cancel
+                                </button>
+                              ) : (
+                                <span className="text-[10px] text-slate-500 font-mono">
+                                  Saved in SQLite &amp; env
+                                </span>
+                              )}
+                              <button
+                                type="button"
+                                disabled={isSavingEmail}
+                                onClick={() => handleSaveSecret('email')}
+                                className="px-3 py-1.5 rounded-md bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-semibold text-xs shadow-md transition-colors flex items-center gap-1.5"
+                              >
+                                {isSavingEmail ? (
+                                  <>
+                                    <RefreshCw className="w-3 h-3 animate-spin" />
+                                    <span>Saving...</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <Save className="w-3 h-3" />
+                                    <span>Save Integration</span>
+                                  </>
+                                )}
+                              </button>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     )}
 
                     {/* Telegram Bot Token & Chat ID */}
                     {svc.service === 'telegram' && (
-                      <div className="pt-2 border-t border-white/5 space-y-2">
-                        <div className="flex items-center justify-between text-[11px]">
-                          <span className="font-semibold text-slate-300 flex items-center gap-1">
-                            <Lock className="w-3 h-3 text-cyan-400" />
-                            <span>Bot Token &amp; Chat ID</span>
-                          </span>
-                          <a 
-                            href="https://t.me/BotFather" 
-                            target="_blank" 
-                            rel="noopener noreferrer"
-                            className="text-cyan-400 hover:text-cyan-300 flex items-center gap-0.5 text-[10px]"
-                          >
-                            <span>Open @BotFather</span>
-                            <ExternalLink className="w-2.5 h-2.5" />
-                          </a>
-                        </div>
+                      <div className="pt-2 border-t border-white/5 space-y-3">
+                        {credentialsSummary?.telegram?.configured && !isEditingTelegram ? (
+                          /* Configured State View */
+                          <div className="p-3 rounded-xl bg-emerald-950/30 border border-emerald-500/20 space-y-2.5">
+                            <div className="flex items-center justify-between">
+                              <span className="flex items-center gap-1.5 text-xs font-semibold text-emerald-300">
+                                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                                <span>Telegram integration configured</span>
+                              </span>
+                              <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-mono">
+                                {credentialsSummary?.telegram?.source === 'environment' ? 'ENV' : 'PERSISTENT'}
+                              </span>
+                            </div>
 
-                        <div className="relative">
-                          <input
-                            type={showSecrets.telegram_token ? 'text' : 'password'}
-                            placeholder="Bot Token (e.g. 123456:ABC-DEF...)"
-                            value={secrets.telegram_token}
-                            onChange={(e) => setSecrets({ ...secrets, telegram_token: e.target.value })}
-                            className="w-full bg-slate-950/60 text-slate-100 placeholder:text-slate-500 text-xs p-2 pr-8 rounded-lg border border-white/10 outline-none focus:border-cyan-500 font-mono"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => setShowSecrets({ ...showSecrets, telegram_token: !showSecrets.telegram_token })}
-                            className="absolute right-2 top-2 text-slate-400 hover:text-white"
-                            title={showSecrets.telegram_token ? "Hide secret" : "Show secret"}
-                          >
-                            {showSecrets.telegram_token ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                          </button>
-                        </div>
+                            <div className="space-y-1 text-xs font-mono">
+                              <div className="flex items-center justify-between text-slate-300">
+                                <span className="text-slate-400">Chat ID:</span>
+                                <span className="font-semibold text-slate-100">{credentialsSummary?.telegram?.chat_id || secrets.telegram_chat_id || 'Configured'}</span>
+                              </div>
+                              <div className="flex items-center justify-between text-slate-300">
+                                <span className="text-slate-400">Bot Token:</span>
+                                <span className="tracking-widest text-emerald-400">{credentialsSummary?.telegram?.masked_token || '••••••••••••••••'}</span>
+                              </div>
+                            </div>
 
-                        <input
-                          type="text"
-                          placeholder="Telegram Chat ID (e.g. 987654321)"
-                          value={secrets.telegram_chat_id}
-                          onChange={(e) => setSecrets({ ...secrets, telegram_chat_id: e.target.value })}
-                          className="w-full bg-slate-950/60 text-slate-100 placeholder:text-slate-500 text-xs p-2 rounded-lg border border-white/10 outline-none focus:border-cyan-500 font-mono"
-                        />
+                            <div className="pt-2 border-t border-white/5 flex items-center justify-between gap-2">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setIsEditingTelegram(true);
+                                  setSecrets(prev => ({ ...prev, telegram_chat_id: credentialsSummary?.telegram?.chat_id || prev.telegram_chat_id, telegram_token: '' }));
+                                }}
+                                className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-white/5 hover:bg-white/10 text-slate-300 border border-white/10 text-xs font-medium transition-colors"
+                              >
+                                <Edit2 className="w-3 h-3 text-cyan-400" />
+                                <span>Edit / Update</span>
+                              </button>
+                              <a
+                                href="https://t.me/BotFather"
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-white/5 hover:bg-white/10 text-slate-400 hover:text-cyan-300 text-xs transition-colors"
+                              >
+                                <span>@BotFather</span>
+                                <ExternalLink className="w-2.5 h-2.5" />
+                              </a>
+                            </div>
+                          </div>
+                        ) : (
+                          /* Edit / Setup Form */
+                          <div className="space-y-2.5">
+                            <div className="flex items-center justify-between text-[11px]">
+                              <span className="font-semibold text-slate-300 flex items-center gap-1">
+                                <Lock className="w-3 h-3 text-cyan-400" />
+                                <span>Bot Token &amp; Chat ID</span>
+                              </span>
+                              <a 
+                                href="https://t.me/BotFather" 
+                                target="_blank" 
+                                rel="noopener noreferrer"
+                                className="text-cyan-400 hover:text-cyan-300 flex items-center gap-0.5 text-[10px]"
+                              >
+                                <span>Open @BotFather</span>
+                                <ExternalLink className="w-2.5 h-2.5" />
+                              </a>
+                            </div>
 
-                        <div className="flex items-center justify-between pt-1">
-                          <span className="text-[10px] text-slate-400 font-mono">
-                            {savedIndicators.telegram ? "Saved: ••••••••••••92" : "Zero plain text in UI"}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => handleSaveSecret('telegram')}
-                            className="px-2.5 py-1 rounded-md bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 border border-cyan-500/30 text-[11px] font-semibold transition-colors"
-                          >
-                            Save Secret
-                          </button>
-                        </div>
+                            <div>
+                              <label className="block text-[10px] text-slate-400 mb-1">Bot Token</label>
+                              <div className="relative">
+                                <input
+                                  type={showSecrets.telegram_token ? 'text' : 'password'}
+                                  placeholder="123456:ABC-DEF..."
+                                  value={secrets.telegram_token}
+                                  onChange={(e) => setSecrets({ ...secrets, telegram_token: e.target.value })}
+                                  className="w-full bg-slate-950/60 text-slate-100 placeholder:text-slate-500 text-xs p-2 pr-8 rounded-lg border border-white/10 outline-none focus:border-cyan-500 font-mono"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => setShowSecrets({ ...showSecrets, telegram_token: !showSecrets.telegram_token })}
+                                  className="absolute right-2 top-2 text-slate-400 hover:text-white"
+                                  title={showSecrets.telegram_token ? "Hide secret" : "Show secret"}
+                                >
+                                  {showSecrets.telegram_token ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                                </button>
+                              </div>
+                            </div>
+
+                            <div>
+                              <label className="block text-[10px] text-slate-400 mb-1">Telegram Chat ID</label>
+                              <input
+                                type="text"
+                                placeholder="e.g. 987654321"
+                                value={secrets.telegram_chat_id}
+                                onChange={(e) => setSecrets({ ...secrets, telegram_chat_id: e.target.value })}
+                                className="w-full bg-slate-950/60 text-slate-100 placeholder:text-slate-500 text-xs p-2 rounded-lg border border-white/10 outline-none focus:border-cyan-500 font-mono"
+                              />
+                            </div>
+
+                            <div className="flex items-center justify-between pt-1">
+                              {credentialsSummary?.telegram?.configured ? (
+                                <button
+                                  type="button"
+                                  onClick={() => setIsEditingTelegram(false)}
+                                  className="px-2.5 py-1 rounded-md bg-white/5 hover:bg-white/10 text-slate-400 text-xs transition-colors"
+                                >
+                                  Cancel
+                                </button>
+                              ) : (
+                                <span className="text-[10px] text-slate-500 font-mono">
+                                  Saved in SQLite &amp; env
+                                </span>
+                              )}
+                              <button
+                                type="button"
+                                disabled={isSavingTelegram}
+                                onClick={() => handleSaveSecret('telegram')}
+                                className="px-3 py-1.5 rounded-md bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-semibold text-xs shadow-md transition-colors flex items-center gap-1.5"
+                              >
+                                {isSavingTelegram ? (
+                                  <>
+                                    <RefreshCw className="w-3 h-3 animate-spin" />
+                                    <span>Saving...</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <Save className="w-3 h-3" />
+                                    <span>Save Integration</span>
+                                  </>
+                                )}
+                              </button>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     )}
 

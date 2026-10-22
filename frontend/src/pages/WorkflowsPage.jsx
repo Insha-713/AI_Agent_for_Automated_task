@@ -32,7 +32,12 @@ import {
   X,
   Search,
   ChevronDown,
-  ChevronUp
+  ChevronUp,
+  Lock,
+  Save,
+  EyeOff,
+  RefreshCw,
+  AlertCircle
 } from 'lucide-react';
 import WorkflowGraph from '../components/WorkflowGraph';
 import VoiceInputButton from '../components/VoiceInputButton';
@@ -109,8 +114,52 @@ export default function WorkflowsPage({ onOpenIntegrations = () => {} }) {
   const [previewFileModal, setPreviewFileModal] = useState(null);
   const [isSavingTemplate, setIsSavingTemplate] = useState(false);
   const [templateSaveSuccess, setTemplateSaveSuccess] = useState(null);
+  const [quickCredsModalOpen, setQuickCredsModalOpen] = useState(false);
+  const [quickCredsForm, setQuickCredsForm] = useState({ email_user: '', email_pass: '' });
+  const [showQuickPass, setShowQuickPass] = useState(false);
+  const [isSavingQuickCreds, setIsSavingQuickCreds] = useState(false);
+  const [quickCredsError, setQuickCredsError] = useState('');
+  const [quickCredsSuccess, setQuickCredsSuccess] = useState('');
   const eventSourceRef = useRef(null);
   const logContainerRef = useRef(null);
+
+  // Restore active workflow state from sessionStorage if returning from Integrations / another tab
+  useEffect(() => {
+    try {
+      const saved = sessionStorage.getItem('agentflow_active_workflow_state');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed.currentPlan && !currentPlan) {
+          setCurrentPlan(parsed.currentPlan);
+          if (parsed.prompt && !prompt) setPrompt(parsed.prompt);
+          if (parsed.logs && parsed.logs.length > 0 && logs.length === 0) setLogs(parsed.logs);
+          if (parsed.runResult && !runResult) setRunResult(parsed.runResult);
+          if (parsed.pendingApproval && !pendingApproval) setPendingApproval(parsed.pendingApproval);
+          if (parsed.selectedStep) setSelectedStep(parsed.selectedStep);
+        }
+      }
+    } catch (e) {
+      console.warn('Could not restore workflow from sessionStorage:', e);
+    }
+  }, []);
+
+  // Persist active workflow state into sessionStorage whenever currentPlan or prompt updates
+  useEffect(() => {
+    try {
+      if (currentPlan) {
+        sessionStorage.setItem('agentflow_active_workflow_state', JSON.stringify({
+          currentPlan,
+          prompt,
+          logs: logs.slice(-50),
+          runResult,
+          pendingApproval,
+          selectedStep
+        }));
+      }
+    } catch (e) {
+      console.warn('Could not persist workflow to sessionStorage:', e);
+    }
+  }, [currentPlan, prompt, logs, runResult, pendingApproval, selectedStep]);
 
   // Auto-scroll logs
   useEffect(() => {
@@ -749,7 +798,7 @@ export default function WorkflowsPage({ onOpenIntegrations = () => {} }) {
     }
   };
 
-  const handleResolveApproval = async (decision, apprId) => {
+  const handleResolveApproval = async (decision, apprId, alreadySubmitted = false) => {
     const approvalIdToUse = apprId || pendingApproval?.approval_id || pendingApproval?.id;
     if (!approvalIdToUse) return;
 
@@ -763,15 +812,17 @@ export default function WorkflowsPage({ onOpenIntegrations = () => {} }) {
     ]);
 
     try {
-      const res = await fetch(`/api/approvals/${approvalIdToUse}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ decision })
-      });
+      if (!alreadySubmitted) {
+        const res = await fetch(`/api/approvals/${approvalIdToUse}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ decision })
+        });
 
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        console.warn('Approval resolution notice:', err);
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          console.warn('Approval resolution notice:', err);
+        }
       }
 
       if (decision === 'reject') {
@@ -792,6 +843,62 @@ export default function WorkflowsPage({ onOpenIntegrations = () => {} }) {
       console.warn('Error resolving approval:', err);
     } finally {
       setIsResolvingApproval(false);
+    }
+  };
+
+  const handleSaveQuickEmail = async (e) => {
+    if (e) e.preventDefault();
+    if (!quickCredsForm.email_user || !quickCredsForm.email_user.includes('@')) {
+      setQuickCredsError('Please enter a valid Gmail address (e.g. user@gmail.com).');
+      return;
+    }
+    const cleanPass = (quickCredsForm.email_pass || '').replace(/\s+/g, '');
+    if (cleanPass.length !== 16) {
+      setQuickCredsError(`Google App Password must be exactly 16 characters (entered: ${cleanPass.length}).`);
+      return;
+    }
+
+    setIsSavingQuickCreds(true);
+    setQuickCredsError('');
+    try {
+      const resp = await fetch('/api/integrations/credentials/email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email_user: quickCredsForm.email_user.trim(),
+          email_pass: cleanPass
+        })
+      });
+      const data = await resp.json();
+      if (resp.ok) {
+        setQuickCredsSuccess('Credentials saved successfully in backend SQLite & env!');
+        if (currentPlan) {
+          setCurrentPlan((prev) => {
+            if (!prev) return prev;
+            return {
+              ...prev,
+              missing_credentials: (prev.missing_credentials || []).filter(
+                (mc) => (mc.key || mc) !== 'EMAIL_USER' && (mc.key || mc) !== 'EMAIL_PASS'
+              )
+            };
+          });
+        }
+        setLogs((prev) => [
+          ...prev,
+          `[${new Date().toLocaleTimeString()}] 🔑 Email credentials configured and saved in backend. Ready to execute!`
+        ]);
+        setTimeout(() => {
+          setQuickCredsModalOpen(false);
+          setQuickCredsSuccess('');
+          setQuickCredsForm({ email_user: '', email_pass: '' });
+        }, 1200);
+      } else {
+        setQuickCredsError(data.detail || 'Failed to save email credentials.');
+      }
+    } catch (err) {
+      setQuickCredsError('Network error connecting to backend.');
+    } finally {
+      setIsSavingQuickCreds(false);
     }
   };
 
@@ -1031,6 +1138,20 @@ export default function WorkflowsPage({ onOpenIntegrations = () => {} }) {
               <span>Missing Integration Credentials ({currentPlan.missing_credentials.length})</span>
             </div>
             <div className="flex items-center gap-2">
+              {currentPlan.missing_credentials.some(mc => (mc.key || mc).includes('EMAIL')) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setQuickCredsModalOpen(true);
+                    setQuickCredsError('');
+                    setQuickCredsSuccess('');
+                  }}
+                  className="px-3 py-1.5 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 text-xs font-semibold transition-colors flex items-center gap-1.5 shadow-sm"
+                >
+                  <Lock className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>Configure Gmail Here</span>
+                </button>
+              )}
               <button
                 type="button"
                 onClick={onOpenIntegrations}
@@ -1050,7 +1171,7 @@ export default function WorkflowsPage({ onOpenIntegrations = () => {} }) {
             </div>
           </div>
           <p className="text-[11px] text-amber-200/80">
-            This workflow requires tools that are not configured in your server environment. To test without sending real messages, run in <strong>Simulation (Dry Run)</strong> mode.
+            This workflow requires tools that are not configured in your server environment. You can configure them above directly without leaving this page, or run in <strong>Simulation (Dry Run)</strong> mode.
           </p>
           <ul className="list-disc list-inside space-y-1 text-[11px] font-mono text-amber-300/90 pl-1">
             {currentPlan.missing_credentials.map((mc, i) => (
@@ -1059,6 +1180,129 @@ export default function WorkflowsPage({ onOpenIntegrations = () => {} }) {
               </li>
             ))}
           </ul>
+        </div>
+      )}
+
+      {/* Quick In-Context Credentials Setup Modal */}
+      {quickCredsModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-150">
+          <div className="w-full max-w-md p-6 rounded-3xl bg-slate-900 border border-white/10 shadow-2xl space-y-5">
+            <div className="flex items-start justify-between">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 rounded-2xl bg-cyan-500/20 text-cyan-400 border border-cyan-500/30">
+                  <Mail className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white">Configure Gmail Integration</h3>
+                  <p className="text-xs text-slate-400">Save credentials directly without losing your active workflow.</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setQuickCredsModalOpen(false)}
+                className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-white/5"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {quickCredsError && (
+              <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                <span>{quickCredsError}</span>
+              </div>
+            )}
+
+            {quickCredsSuccess && (
+              <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4 flex-shrink-0" />
+                <span>{quickCredsSuccess}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleSaveQuickEmail} className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+                  Sender Gmail Address
+                </label>
+                <input
+                  type="email"
+                  required
+                  placeholder="your.email@gmail.com"
+                  value={quickCredsForm.email_user}
+                  onChange={(e) => setQuickCredsForm({ ...quickCredsForm, email_user: e.target.value })}
+                  className="w-full bg-slate-950/80 text-white placeholder:text-slate-500 text-xs p-2.5 rounded-xl border border-white/10 outline-none focus:border-cyan-500 font-mono"
+                />
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="block text-xs font-semibold text-slate-300">
+                    16-Character App Password
+                  </label>
+                  <a
+                    href="https://myaccount.google.com/apppasswords"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-[11px] text-cyan-400 hover:text-cyan-300 flex items-center gap-1"
+                  >
+                    <span>Google App Passwords</span>
+                    <ExternalLink className="w-3 h-3" />
+                  </a>
+                </div>
+                <div className="relative">
+                  <input
+                    type={showQuickPass ? 'text' : 'password'}
+                    required
+                    placeholder="abcd efgh ijkl mnop"
+                    value={quickCredsForm.email_pass}
+                    onChange={(e) => setQuickCredsForm({ ...quickCredsForm, email_pass: e.target.value })}
+                    className="w-full bg-slate-950/80 text-white placeholder:text-slate-500 text-xs p-2.5 pr-10 rounded-xl border border-white/10 outline-none focus:border-cyan-500 font-mono"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowQuickPass(!showQuickPass)}
+                    className="absolute right-3 top-2.5 text-slate-400 hover:text-white"
+                  >
+                    {showQuickPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+                <div className="flex items-center justify-between text-[10px] text-slate-400 mt-1">
+                  <span>Saved securely in backend SQLite &amp; env</span>
+                  <span className={(quickCredsForm.email_pass || '').replace(/\s+/g, '').length === 16 ? 'text-emerald-400 font-semibold' : 'text-slate-500 font-mono'}>
+                    {(quickCredsForm.email_pass || '').replace(/\s+/g, '').length}/16 chars
+                  </span>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-white/5">
+                <button
+                  type="button"
+                  onClick={() => setQuickCredsModalOpen(false)}
+                  className="px-4 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-slate-300 text-xs font-semibold transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSavingQuickCreds}
+                  className="px-4 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-xs font-bold transition-colors flex items-center gap-1.5 shadow-md shadow-cyan-500/20"
+                >
+                  {isSavingQuickCreds ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      <span>Saving...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Save className="w-3.5 h-3.5" />
+                      <span>Save &amp; Continue Workflow</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
       )}
 

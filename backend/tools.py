@@ -25,6 +25,7 @@ import htmldate
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from langchain_core.tools import tool
+from backend.credentials import get_credential
 
 # Preferred ddgs import
 try:
@@ -790,14 +791,14 @@ def send_email(to_email: str, subject: str, body: str) -> str:
         if not is_approved:
             return f"[ACTION REJECTED BY USER] Sending email to '{clean_to}' was rejected by user. Email not sent."
 
-    # Read and sanitize credentials from environment
-    email_user = (os.getenv("EMAIL_USER") or os.getenv("GMAIL_EMAIL") or "").strip().strip("'\"")
-    email_pass = (os.getenv("EMAIL_PASS") or os.getenv("GMAIL_APP_PASSWORD") or "").strip().strip("'\"").replace(" ", "")
+    # Read and sanitize credentials from persistent store (os.environ, SQLite, .env)
+    email_user = (get_credential("EMAIL_USER") or get_credential("GMAIL_EMAIL") or "").strip().strip("'\"")
+    email_pass = (get_credential("EMAIL_PASS") or get_credential("GMAIL_APP_PASSWORD") or "").strip().strip("'\"").replace(" ", "")
 
     if not email_user or not email_pass:
         return (
             f"[SIMULATION MODE - EMAIL NOT SENT (APPROVED)]\n"
-            f"Notice: EMAIL_USER / EMAIL_PASS not configured in .env file.\n"
+            f"Notice: EMAIL_USER / EMAIL_PASS not configured in server settings.\n"
             f"To: {clean_to}\n"
             f"Subject: {subject}\n"
             f"Body preview:\n{body[:300]}..."
@@ -832,7 +833,14 @@ def send_email(to_email: str, subject: str, body: str) -> str:
             f"Failed to send email to '{clean_to}': Recipient rejected. "
             f"Gmail SMTP rejected destination address '{clean_to}'. Please verify the recipient address."
         )
-    except (smtplib.SMTPServerDisconnected, socket.timeout, TimeoutError, ConnectionRefusedError, OSError) as conn_err:
+    except (smtplib.SMTPServerDisconnected, smtplib.SMTPConnectError, socket.timeout, TimeoutError, ConnectionRefusedError, OSError) as conn_err:
+        err_msg = str(conn_err)
+        if "101" in err_msg or "unreachable" in err_msg.lower():
+            return (
+                f"Notice: Outbound SMTP connection blocked by server environment ({err_msg}). "
+                f"Cloud hosting providers like Render restrict direct outbound SMTP ports 587/465 on free tiers. "
+                f"To dispatch live emails, run AgentFlow locally on your computer where Gmail SMTP connects directly."
+            )
         return (
             f"Failed to send email to '{clean_to}': Connection blocked or timed out on ports 587 and 465. "
             f"Please check your internet connection, firewall, VPN, or antivirus settings."
@@ -861,13 +869,13 @@ def send_telegram_message(message: str, chat_id: Optional[str] = None, parse_mod
         if not is_approved:
             return "[ACTION REJECTED BY USER] Sending Telegram message was rejected by user."
 
-    bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-    target_chat_id = (chat_id or os.getenv("TELEGRAM_CHAT_ID", "")).strip()
+    bot_token = (get_credential("TELEGRAM_BOT_TOKEN") or "").strip()
+    target_chat_id = (chat_id or get_credential("TELEGRAM_CHAT_ID") or "").strip()
 
     if not bot_token or not target_chat_id:
         return (
             f"[SIMULATION MODE - TELEGRAM NOT SENT (APPROVED)]\n"
-            f"Notice: TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not configured in .env\n"
+            f"Notice: TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not configured in settings\n"
             f"Target Chat: {target_chat_id or 'Not Set'}\n"
             f"Message Preview:\n{message[:300]}..."
         )
@@ -1085,10 +1093,8 @@ def read_important_emails(max_emails: int = 5, criteria: str = "urgent, bills, j
     import email
     from email.header import decode_header
 
-    email_user = os.getenv("GMAIL_EMAIL") or os.getenv("EMAIL_USER") or ""
-    email_pass = os.getenv("GMAIL_APP_PASSWORD") or os.getenv("EMAIL_PASS") or ""
-    email_user = email_user.strip()
-    email_pass = email_pass.strip().replace(" ", "")
+    email_user = (get_credential("GMAIL_EMAIL") or get_credential("EMAIL_USER") or "").strip()
+    email_pass = (get_credential("GMAIL_APP_PASSWORD") or get_credential("EMAIL_PASS") or "").strip().replace(" ", "")
 
     if not email_user or not email_pass:
         return (

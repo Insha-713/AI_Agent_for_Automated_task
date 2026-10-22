@@ -52,6 +52,7 @@ from backend.tools import (
 )
 from backend.approvals import approval_manager
 from backend.agent import detect_ollama_model
+from backend.credentials import get_credential
 from backend.db import (
     save_workflow,
     update_workflow_status,
@@ -390,15 +391,15 @@ async def extract_workflow_requirements(prompt: str, user_context: Optional[Dict
     known_inputs["timezone"] = sched_info["timezone"]
 
     # Incorporate user settings if available
-    default_email = user_context.get("default_email", "").strip() or os.getenv("EMAIL_USER", "").strip()
+    default_email = user_context.get("default_email", "").strip() or get_credential("EMAIL_USER", "").strip()
     if default_email and "receiver_email" not in known_inputs and ("send_email" in tools_needed and "me" in p_lower):
         known_inputs["receiver_email"] = default_email
 
     # Check already configured environment credentials
-    env_telegram_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-    env_telegram_chat = os.getenv("TELEGRAM_CHAT_ID", "").strip()
-    env_gmail_user = os.getenv("EMAIL_USER", "").strip() or os.getenv("GMAIL_EMAIL", "").strip()
-    env_gmail_pass = os.getenv("EMAIL_PASS", "").strip() or os.getenv("GMAIL_APP_PASSWORD", "").strip()
+    env_telegram_token = get_credential("TELEGRAM_BOT_TOKEN", "").strip()
+    env_telegram_chat = get_credential("TELEGRAM_CHAT_ID", "").strip()
+    env_gmail_user = get_credential("EMAIL_USER", "").strip() or get_credential("GMAIL_EMAIL", "").strip()
+    env_gmail_pass = get_credential("EMAIL_PASS", "").strip() or get_credential("GMAIL_APP_PASSWORD", "").strip()
 
     # Step 4: Formulate Questions for Missing Inputs (Strictly only what is missing!)
     questions: List[Dict[str, Any]] = []
@@ -674,22 +675,22 @@ def handle_chat_help_query(query: str, current_question: Optional[Dict[str, Any]
 
 
 def check_missing_credentials(required_creds: List[str]) -> List[Dict[str, str]]:
-    """Checks environment variables and returns missing credentials with setup guidance."""
+    """Checks persistent credentials and returns missing credentials with setup guidance."""
     missing = []
     for cred in required_creds:
-        val = os.getenv(cred, "").strip()
+        val = get_credential(cred).strip()
         if not val:
             guide = ""
             if cred == "EMAIL_USER":
-                guide = "Configure your Gmail address in .env (e.g. EMAIL_USER=your_email@gmail.com)"
+                guide = "Configure your Gmail address in Integrations settings."
             elif cred == "EMAIL_PASS":
-                guide = "Generate a 16-character Google App Password (not your normal password) and set EMAIL_PASS in .env"
+                guide = "Enter your 16-character Google App Password in Integrations settings."
             elif cred == "TELEGRAM_BOT_TOKEN":
-                guide = "Create a bot with @BotFather on Telegram and set TELEGRAM_BOT_TOKEN in .env"
+                guide = "Create a bot with @BotFather on Telegram and save TELEGRAM_BOT_TOKEN in Integrations."
             elif cred == "TELEGRAM_CHAT_ID":
-                guide = "Find your chat ID with @userinfobot and set TELEGRAM_CHAT_ID in .env"
+                guide = "Find your chat ID with @userinfobot and save TELEGRAM_CHAT_ID in Integrations."
             else:
-                guide = f"Set {cred} in your server .env file"
+                guide = f"Set {cred} in Integrations settings."
             missing.append({"key": cred, "instructions": guide})
     return missing
 
@@ -880,7 +881,7 @@ def generate_fallback_plan(prompt: str) -> Dict[str, Any]:
     # Step: Send Email if requested
     if needs_email:
         email_match = re.search(r"[\w\.-]+@[\w\.-]+\.\w+", prompt)
-        to_email = email_match.group(0) if email_match else os.getenv("EMAIL_USER", "user@example.com")
+        to_email = email_match.group(0) if email_match else get_credential("EMAIL_USER", "user@example.com")
         if needs_weather:
             known_ents = extract_known_entities(prompt)
             city = known_ents.get("city", "Lucknow")
@@ -1378,6 +1379,31 @@ class WorkflowExecutionEngine:
                 target_path = _safe_workspace_path(resolved_params.get("filename", ""))
                 if target_path.exists():
                     needs_approval = True
+
+            # Pre-flight credential check for sensitive actions
+            if tool_name == "send_email" and not self.dry_run:
+                email_u = get_credential("EMAIL_USER") or get_credential("GMAIL_EMAIL")
+                email_p = get_credential("EMAIL_PASS") or get_credential("GMAIL_APP_PASSWORD")
+                if not email_u or not email_p:
+                    err_msg = (
+                        "Email integration is not configured. "
+                        "Please configure your Gmail address and 16-character Google App Password in Integrations settings before executing this step."
+                    )
+                    self.logs.append({
+                        "step_id": step_id,
+                        "status": "failed",
+                        "error": err_msg
+                    })
+                    yield {
+                        "type": "step_error",
+                        "step_id": step_id,
+                        "status": "failed",
+                        "display_status": "NEEDS SETUP",
+                        "error": err_msg,
+                        "requires_credentials": ["EMAIL_USER", "EMAIL_PASS"]
+                    }
+                    overall_status = "failed"
+                    break
 
             if needs_approval:
                 approval_id = f"appr_{uuid.uuid4().hex[:10]}"

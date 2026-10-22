@@ -17,6 +17,7 @@ from typing import Dict, Any, List, Optional
 
 import requests
 from dotenv import load_dotenv
+from backend.credentials import get_credential
 
 from backend.llm_provider import (
     test_llm_connection,
@@ -55,8 +56,8 @@ def test_ollama_integration() -> Dict[str, Any]:
 
 def test_telegram_integration() -> Dict[str, Any]:
     """Tests Telegram Bot API credentials via getMe probe."""
-    bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-    chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+    bot_token = (get_credential("TELEGRAM_BOT_TOKEN") or "").strip()
+    chat_id = (get_credential("TELEGRAM_CHAT_ID") or "").strip()
 
     if not bot_token:
         return {
@@ -65,8 +66,8 @@ def test_telegram_integration() -> Dict[str, Any]:
             "status": "not_configured",
             "latency_ms": 0.0,
             "configured": False,
-            "message": "TELEGRAM_BOT_TOKEN not configured in .env",
-            "guidance": "Message @BotFather on Telegram, type /newbot, and set TELEGRAM_BOT_TOKEN in .env"
+            "message": "TELEGRAM_BOT_TOKEN not configured in settings",
+            "guidance": "Message @BotFather on Telegram, type /newbot, and save TELEGRAM_BOT_TOKEN in Integrations."
         }
 
     t0 = time.perf_counter()
@@ -117,8 +118,8 @@ def test_telegram_integration() -> Dict[str, Any]:
 
 def test_email_integration() -> Dict[str, Any]:
     """Tests Gmail SMTP connection and credentials without sending real emails."""
-    email_user = (os.getenv("EMAIL_USER") or os.getenv("GMAIL_EMAIL") or "").strip().strip("'\"")
-    email_pass = (os.getenv("EMAIL_PASS") or os.getenv("GMAIL_APP_PASSWORD") or "").strip().strip("'\"").replace(" ", "")
+    email_user = (get_credential("EMAIL_USER") or get_credential("GMAIL_EMAIL") or "").strip().strip("'\"")
+    email_pass = (get_credential("EMAIL_PASS") or get_credential("GMAIL_APP_PASSWORD") or "").strip().strip("'\"").replace(" ", "")
 
     if not email_user or not email_pass:
         return {
@@ -127,8 +128,8 @@ def test_email_integration() -> Dict[str, Any]:
             "status": "not_configured",
             "configured": False,
             "latency_ms": 0.0,
-            "message": "EMAIL_USER or EMAIL_PASS not configured in server environment.",
-            "guidance": "Generate a 16-character Google App Password (myaccount.google.com/apppasswords) and set EMAIL_USER and EMAIL_PASS."
+            "message": "EMAIL_USER or EMAIL_PASS not configured in server settings.",
+            "guidance": "Enter your Gmail address and 16-character Google App Password (myaccount.google.com/apppasswords) and click Save."
         }
 
     t0 = time.perf_counter()

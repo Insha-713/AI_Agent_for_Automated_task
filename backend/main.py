@@ -68,6 +68,13 @@ from backend.llm_provider import (
 )
 from backend.tools import WORKSPACE_PATH
 from backend.approvals import approval_manager
+from backend.credentials import (
+    get_credential,
+    set_credential,
+    delete_credential,
+    load_all_credentials_into_env,
+    get_masked_credentials_summary,
+)
 from backend.scheduler import (
     start_scheduler,
     shutdown_scheduler,
@@ -119,6 +126,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 async def lifespan(app: FastAPI):
     # Initialize SQLite database tables on startup
     await init_db()
+    load_all_credentials_into_env()
     WORKSPACE_PATH.mkdir(parents=True, exist_ok=True)
     await start_scheduler()
 
@@ -172,6 +180,16 @@ class UpdateSettingRequest(BaseModel):
 
 class BulkUpdateSettingsRequest(BaseModel):
     settings: Dict[str, str]
+
+
+class SaveEmailCredentialsRequest(BaseModel):
+    email_user: str
+    email_pass: Optional[str] = None
+
+
+class SaveTelegramCredentialsRequest(BaseModel):
+    telegram_token: Optional[str] = None
+    telegram_chat_id: Optional[str] = None
 
 
 class CreateScheduleRequest(BaseModel):
@@ -268,11 +286,11 @@ async def health_check():
     model = get_active_model_name(prov)
     llm_conf = is_llm_configured(prov)
 
-    email_user = (os.getenv("EMAIL_USER") or os.getenv("GMAIL_EMAIL") or "").strip()
-    email_pass = (os.getenv("EMAIL_PASS") or os.getenv("GMAIL_APP_PASSWORD") or "").strip()
+    email_user = (get_credential("EMAIL_USER") or get_credential("GMAIL_EMAIL") or "").strip()
+    email_pass = (get_credential("EMAIL_PASS") or get_credential("GMAIL_APP_PASSWORD") or "").strip()
     email_conf = bool(email_user and email_pass)
 
-    bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    bot_token = (get_credential("TELEGRAM_BOT_TOKEN") or "").strip()
     telegram_conf = bool(bot_token)
 
     workspace_files_count = len(list(WORKSPACE_PATH.glob("*")))
@@ -350,25 +368,98 @@ async def get_stats():
 
 @app.get("/api/settings")
 async def get_settings():
-    """Retrieves stored user preferences and memory."""
+    """Retrieves stored user preferences and memory with sensitive credentials safely masked."""
     settings = await get_all_settings()
-    return {"settings": settings}
+    masked = {}
+    for k, v in settings.items():
+        if k in ("EMAIL_PASS", "GMAIL_APP_PASSWORD", "TELEGRAM_BOT_TOKEN", "GROQ_API_KEY", "GEMINI_API_KEY"):
+            masked[k] = "••••••••••••••••" if v else ""
+        else:
+            masked[k] = v
+    return {"settings": masked}
 
 
 @app.put("/api/settings")
 async def update_user_setting(req: UpdateSettingRequest):
     """Updates a single user preference or memory entry."""
-    await update_setting(req.key, req.value)
-    return {"message": f"Setting '{req.key}' updated successfully."}
+    k, v = req.key.strip(), req.value.strip()
+    if k in ("EMAIL_USER", "EMAIL_PASS", "GMAIL_EMAIL", "GMAIL_APP_PASSWORD", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "GROQ_API_KEY", "GEMINI_API_KEY", "LLM_PROVIDER", "LLM_MODEL"):
+        set_credential(k, v)
+    else:
+        await update_setting(k, v)
+    return {"message": f"Setting '{k}' updated successfully."}
 
 
 @app.post("/api/settings")
 async def bulk_update_settings(req: BulkUpdateSettingsRequest):
     """Updates multiple user memory and preferences at once."""
+    credential_keys = {"EMAIL_USER", "EMAIL_PASS", "GMAIL_EMAIL", "GMAIL_APP_PASSWORD", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "GROQ_API_KEY", "GEMINI_API_KEY", "LLM_PROVIDER", "LLM_MODEL"}
     for k, v in req.settings.items():
-        await update_setting(k, str(v))
+        k_clean, v_clean = k.strip(), str(v).strip()
+        if k_clean in credential_keys:
+            set_credential(k_clean, v_clean)
+        else:
+            await update_setting(k_clean, v_clean)
     all_updated = await get_all_settings()
+    # Mask secrets
+    for sk in credential_keys:
+        if sk in all_updated and sk not in ("EMAIL_USER", "GMAIL_EMAIL", "LLM_PROVIDER", "LLM_MODEL", "TELEGRAM_CHAT_ID"):
+            all_updated[sk] = "••••••••••••••••" if all_updated[sk] else ""
     return {"message": "Settings updated successfully.", "settings": all_updated}
+
+
+# ==========================================
+# Integrations Credentials Endpoints
+# ==========================================
+
+@app.get("/api/integrations/credentials")
+async def get_integrations_credentials_endpoint():
+    """Returns safe masked summary of integration credentials for UI status display."""
+    return get_masked_credentials_summary()
+
+
+@app.post("/api/integrations/credentials/email")
+async def save_email_credentials_endpoint(req: SaveEmailCredentialsRequest):
+    """Saves Gmail address and Google App Password persistently across SQLite, os.environ, and .env."""
+    email_user = req.email_user.strip()
+    if not email_user or "@" not in email_user:
+        raise HTTPException(status_code=400, detail="Please provide a valid Gmail address.")
+
+    set_credential("EMAIL_USER", email_user)
+
+    if req.email_pass is not None and req.email_pass.strip():
+        clean_pass = req.email_pass.strip().replace(" ", "")
+        set_credential("EMAIL_PASS", clean_pass)
+
+    has_pass = bool(get_credential("EMAIL_PASS"))
+    return {
+        "status": "success",
+        "message": "Email integration credentials saved successfully.",
+        "email_user": email_user,
+        "configured": bool(email_user and has_pass)
+    }
+
+
+@app.delete("/api/integrations/credentials/email")
+async def delete_email_credentials_endpoint():
+    """Clears saved email credentials."""
+    delete_credential("EMAIL_USER")
+    delete_credential("EMAIL_PASS")
+    return {"status": "success", "message": "Email integration credentials removed."}
+
+
+@app.post("/api/integrations/credentials/telegram")
+async def save_telegram_credentials_endpoint(req: SaveTelegramCredentialsRequest):
+    """Saves Telegram Bot Token and Chat ID persistently."""
+    if req.telegram_token is not None and req.telegram_token.strip():
+        set_credential("TELEGRAM_BOT_TOKEN", req.telegram_token.strip())
+    if req.telegram_chat_id is not None and req.telegram_chat_id.strip():
+        set_credential("TELEGRAM_CHAT_ID", req.telegram_chat_id.strip())
+    return {
+        "status": "success",
+        "message": "Telegram credentials saved successfully.",
+        "configured": bool(get_credential("TELEGRAM_BOT_TOKEN"))
+    }
 
 
 @app.get("/api/workspace/files")

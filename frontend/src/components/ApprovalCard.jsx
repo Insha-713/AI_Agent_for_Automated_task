@@ -53,8 +53,8 @@ export default function ApprovalCard({ approval, onResolve, dryRun = false }) {
 
       setResolvedDecision(decision);
       if (onResolve) {
-        // Pass decision first, then approval ID
-        onResolve(decision, apprId);
+        // Pass decision, approval ID, and flag indicating it has already been submitted
+        onResolve(decision, apprId, true);
       }
     } catch (err) {
       console.error('Failed to resolve approval:', err);
