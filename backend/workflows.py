@@ -58,9 +58,15 @@ from backend.db import (
     update_workflow_status,
     create_workflow_run_record,
     update_workflow_run_record,
+    get_workflow_run_by_id,
+    get_active_run_for_workflow,
     get_workflow_by_id,
     create_approval_record,
     resolve_approval_record,
+    get_approval_by_id,
+    get_approval_by_run_and_step,
+    record_workflow_run_step,
+    save_generated_file,
 )
 
 load_dotenv()
@@ -1135,11 +1141,11 @@ Allowed tools:
 # ==========================================
 
 class WorkflowExecutionEngine:
-    def __init__(self, workflow_id: str, plan: Dict[str, Any], dry_run: bool = False):
+    def __init__(self, workflow_id: str, plan: Dict[str, Any], dry_run: bool = False, run_id: Optional[str] = None):
         self.workflow_id = workflow_id
         self.plan = plan
         self.dry_run = dry_run
-        self.run_id = f"run_{uuid.uuid4().hex[:10]}"
+        self.run_id = run_id or f"run_{uuid.uuid4().hex[:10]}"
         self.step_context: Dict[str, Any] = {}
         self.logs: List[Dict[str, Any]] = []
         self.is_cancelled = False
@@ -1327,11 +1333,28 @@ class WorkflowExecutionEngine:
 
     async def stream_workflow(self) -> AsyncGenerator[Dict[str, Any], None]:
         """
-        Streams step-by-step execution events over SSE, updating SQLite state.
+        Streams step-by-step execution events over SSE, updating SQLite/Postgres state.
         """
         start_time = time.time()
-        await create_workflow_run_record(self.run_id, self.workflow_id, dry_run=self.dry_run)
+        wf_prompt = self.plan.get("title") or self.plan.get("description") or ""
+        await create_workflow_run_record(
+            run_id=self.run_id,
+            workflow_id=self.workflow_id,
+            prompt=wf_prompt,
+            plan_json=json.dumps(self.plan),
+            dry_run=self.dry_run
+        )
         await update_workflow_status(self.workflow_id, "running")
+
+        # Resume state if this run was already in progress (e.g., reconnected stream)
+        existing_run = await get_workflow_run_by_id(self.run_id)
+        if existing_run:
+            if existing_run.get("step_results"):
+                self.step_context.update(existing_run["step_results"])
+            if existing_run.get("step_logs"):
+                for ex_l in existing_run["step_logs"]:
+                    if not any(l.get("step_id") == ex_l.get("step_id") for l in self.logs):
+                        self.logs.append(ex_l)
 
         yield {
             "type": "workflow_start",
@@ -1361,6 +1384,33 @@ class WorkflowExecutionEngine:
 
             step_id = step["id"]
             tool_name = step["tool"]
+
+            # If this step was already completed in this run (prior to an approval pause and resume),
+            # yield its recorded result and skip re-execution
+            prior_completed = any(l.get("step_id") == step_id and l.get("status") == "completed" for l in self.logs)
+            if prior_completed and (step_id in self.step_context or f"{step_id}.output" in self.step_context):
+                cached_val = self.step_context.get(f"{step_id}.output", self.step_context.get(step_id, ""))
+                yield {
+                    "type": "step_start",
+                    "step_index": idx,
+                    "step_id": step_id,
+                    "name": step["name"],
+                    "tool": tool_name,
+                    "requires_approval": False,
+                    "resumed": True
+                }
+                yield {
+                    "type": "step_result",
+                    "step_id": step_id,
+                    "name": step.get("name", ""),
+                    "tool": tool_name,
+                    "status": "completed",
+                    "result": cached_val,
+                    "mock": False,
+                    "resumed": True
+                }
+                continue
+
             raw_params = step.get("params", {})
             resolved_params = self.substitute_params(raw_params)
 
@@ -1373,12 +1423,58 @@ class WorkflowExecutionEngine:
                 "requires_approval": step.get("requires_approval", False),
             }
 
-            # Requirement: Stop execution and wait for approval on sensitive steps (email, telegram, or file overwrite)
+            # Pre-record step in DB
+            try:
+                await record_workflow_run_step(
+                    run_id=self.run_id,
+                    step_id=step_id,
+                    tool_name=tool_name,
+                    name=step.get("name", step_id),
+                    status="running",
+                    parameters=resolved_params
+                )
+            except Exception as e:
+                print(f"[Workflows] Notice recording step start in DB: {e}")
+
+            # Sensitive step approval check
             needs_approval = step.get("requires_approval", False) or tool_name in ("send_email", "send_telegram_message")
             if tool_name == "save_file" and not needs_approval:
                 target_path = _safe_workspace_path(resolved_params.get("filename", ""))
                 if target_path.exists():
                     needs_approval = True
+
+            # Check if this step was ALREADY decided in the database for this run
+            existing_approval = await get_approval_by_run_and_step(self.run_id, step_id)
+            if existing_approval:
+                appr_status = existing_approval.get("status", "").lower()
+                if appr_status == "approved":
+                    needs_approval = False
+                    print(f"[Workflows] Step '{step_id}' was already approved in DB for run '{self.run_id}'. Resuming execution.")
+                elif appr_status == "rejected":
+                    err_msg = f"Execution halted: Step '{step['name']}' was previously rejected by user."
+                    self.logs.append({
+                        "step_id": step_id,
+                        "status": "rejected",
+                        "error": err_msg
+                    })
+                    await record_workflow_run_step(
+                        run_id=self.run_id,
+                        step_id=step_id,
+                        tool_name=tool_name,
+                        name=step.get("name", step_id),
+                        status="rejected",
+                        parameters=resolved_params,
+                        error_message=err_msg
+                    )
+                    yield {
+                        "type": "step_error",
+                        "step_id": step_id,
+                        "status": "rejected",
+                        "display_status": "REJECTED",
+                        "error": err_msg
+                    }
+                    overall_status = "cancelled"
+                    break
 
             # Pre-flight credential check for sensitive actions
             if tool_name == "send_email" and not self.dry_run:
@@ -1394,6 +1490,15 @@ class WorkflowExecutionEngine:
                         "status": "failed",
                         "error": err_msg
                     })
+                    await record_workflow_run_step(
+                        run_id=self.run_id,
+                        step_id=step_id,
+                        tool_name=tool_name,
+                        name=step.get("name", step_id),
+                        status="failed",
+                        parameters=resolved_params,
+                        error_message=err_msg
+                    )
                     yield {
                         "type": "step_error",
                         "step_id": step_id,
@@ -1406,7 +1511,25 @@ class WorkflowExecutionEngine:
                     break
 
             if needs_approval:
-                approval_id = f"appr_{uuid.uuid4().hex[:10]}"
+                if existing_approval and existing_approval.get("status") == "pending":
+                    approval_id = existing_approval.get("id")
+                else:
+                    approval_id = f"appr_{uuid.uuid4().hex[:10]}"
+                    try:
+                        await create_approval_record(
+                            approval_id=approval_id,
+                            task_id=self.workflow_id,
+                            action_type=tool_name,
+                            tool_name=tool_name,
+                            parameters=resolved_params,
+                            details=f"Step '{step['name']}' requires your confirmation before proceeding.",
+                            run_id=self.run_id,
+                            step_id=step_id,
+                            workflow_id=self.workflow_id
+                        )
+                    except Exception as e:
+                        print(f"[Workflows] Warning: failed to save approval to DB: {e}")
+
                 approval_record = {
                     "id": approval_id,
                     "workflow_id": self.workflow_id,
@@ -1422,18 +1545,6 @@ class WorkflowExecutionEngine:
                     "created_at": datetime.now().isoformat()
                 }
                 approval_manager.register_pending(approval_record)
-                try:
-                    await create_approval_record(
-                        approval_id=approval_id,
-                        task_id=self.workflow_id,
-                        action_type=tool_name,
-                        tool_name=tool_name,
-                        parameters=resolved_params,
-                        details=approval_record["details"]
-                    )
-                except Exception as e:
-                    print(f"[Workflows] Warning: failed to save approval to DB: {e}")
-
                 await update_workflow_status(self.workflow_id, "waiting_for_approval")
 
                 # Yield approval_required SSE event with fully rendered parameters for user inspection
@@ -1472,6 +1583,12 @@ class WorkflowExecutionEngine:
                     rec = approval_manager.get_pending_approval(approval_id)
                     if rec and rec.get("decision"):
                         decision = rec.get("decision")
+                        break
+
+                    # Check DB directly in case another process/worker resolved it
+                    db_appr = await get_approval_by_id(approval_id)
+                    if db_appr and db_appr.get("status") in ("approved", "rejected"):
+                        decision = "approve" if db_appr.get("status") == "approved" else "reject"
                         break
 
                     # Keep-alive heartbeat every 5s prevents Vercel and Render edge proxy timeouts
@@ -1525,6 +1642,16 @@ class WorkflowExecutionEngine:
                         "error": err_msg
                     })
 
+                    await record_workflow_run_step(
+                        run_id=self.run_id,
+                        step_id=step_id,
+                        tool_name=tool_name,
+                        name=step.get("name", step_id),
+                        status="rejected",
+                        parameters=resolved_params,
+                        error_message=err_msg
+                    )
+
                     yield {
                         "type": "step_error",
                         "step_id": step_id,
@@ -1550,7 +1677,9 @@ class WorkflowExecutionEngine:
                     overall_status = "cancelled"
                     break
 
+            step_t0 = time.time()
             step_exec = await self.execute_step(step)
+            step_duration = round(time.time() - step_t0, 2)
             step_status = step_exec["status"]
 
             if step_status == "completed":
@@ -1560,6 +1689,32 @@ class WorkflowExecutionEngine:
                 self.step_context[f"{step_id}.output"] = result_val
                 self.step_context["last_output"] = result_val
                 self.step_context["previous_output"] = result_val
+
+                # If save_file, write content to generated_files table
+                if tool_name == "save_file":
+                    content_to_save = str(resolved_params.get("content", ""))
+                    filename_to_save = resolved_params.get("filename", "")
+                    if filename_to_save and content_to_save:
+                        try:
+                            await save_generated_file(
+                                filename=filename_to_save,
+                                content_text=content_to_save,
+                                run_id=self.run_id,
+                                workflow_id=self.workflow_id
+                            )
+                        except Exception as e:
+                            print(f"[Workflows] Notice saving generated file: {e}")
+
+                await record_workflow_run_step(
+                    run_id=self.run_id,
+                    step_id=step_id,
+                    tool_name=tool_name,
+                    name=step.get("name", step_id),
+                    status="completed",
+                    parameters=resolved_params,
+                    output_summary=result_val[:500] if result_val else "",
+                    duration_seconds=step_duration
+                )
 
                 step_log = {
                     "step_id": step_id,
@@ -1583,6 +1738,18 @@ class WorkflowExecutionEngine:
                 err_msg = step_exec.get("error", "Unknown execution error")
                 err_type = step_exec.get("error_type", "error")
                 display_status = "NO DATA" if err_type == "no_data" else "FAILED"
+
+                await record_workflow_run_step(
+                    run_id=self.run_id,
+                    step_id=step_id,
+                    tool_name=tool_name,
+                    name=step.get("name", step_id),
+                    status="failed",
+                    parameters=resolved_params,
+                    output_summary=err_msg,
+                    duration_seconds=step_duration,
+                    error_message=err_msg
+                )
 
                 self.logs.append({
                     "step_id": step_id,
@@ -1698,7 +1865,8 @@ class WorkflowExecutionEngine:
             status=overall_status,
             step_results=self.step_context,
             step_logs=self.logs,
-            duration_seconds=duration
+            duration_seconds=duration,
+            generated_files=generated_files
         )
         await update_workflow_status(self.workflow_id, overall_status)
 

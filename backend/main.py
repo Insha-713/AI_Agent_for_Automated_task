@@ -57,6 +57,16 @@ from backend.db import (
     get_all_templates_from_db,
     get_template_by_id_from_db,
     save_custom_template_to_db,
+    get_db_type,
+    check_db_writable,
+    count_workflow_runs,
+    list_workflow_runs,
+    get_workflow_run_by_id,
+    delete_workflow_run,
+    get_active_run_for_workflow,
+    get_generated_file,
+    save_generated_file,
+    get_db,
 )
 from backend.agent import stream_agent_steps
 from backend.llm_provider import (
@@ -152,10 +162,25 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Enable CORS for React frontend (Vite default port 5173, etc.)
+# Enable CORS for React frontend (Vite default port 5173, Vercel production & preview, etc.)
+raw_origins = os.getenv("ALLOWED_ORIGINS", "")
+if raw_origins.strip():
+    cors_allowed_origins = [o.strip() for o in raw_origins.split(",") if o.strip()]
+else:
+    cors_allowed_origins = [
+        "https://ai-agent-for-automated-task.vercel.app",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+    ]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=cors_allowed_origins,
+    allow_origin_regex=r"https?://.*",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -281,7 +306,7 @@ class SaveCustomTemplateRequest(BaseModel):
 
 @app.get("/api/health")
 async def health_check():
-    """Health check endpoint displaying active LLM provider and integration status (no secrets)."""
+    """Health check endpoint displaying active LLM provider, database status, and integration status (no secrets)."""
     prov = get_llm_provider()
     model = get_active_model_name(prov)
     llm_conf = is_llm_configured(prov)
@@ -294,12 +319,23 @@ async def health_check():
     telegram_conf = bool(bot_token)
 
     workspace_files_count = len(list(WORKSPACE_PATH.glob("*")))
+    db_type = get_db_type()
+    db_writable = await check_db_writable()
+    stored_runs = await count_workflow_runs()
 
     return {
         "status": "healthy",
         "app": "AgentFlow",
         "llm_provider": prov,
         "active_model": model,
+        "database": {
+            "type": db_type,
+            "writable": db_writable,
+            "stored_runs_count": stored_runs
+        },
+        "database_type": db_type,
+        "database_writable": db_writable,
+        "stored_runs_count": stored_runs,
         "integrations": {
             "llm": {
                 "provider": prov,
@@ -536,25 +572,66 @@ async def delete_workspace_file(filename: str):
 
 @app.get("/api/workspace/files/{filename}/preview")
 async def preview_workspace_file(filename: str):
-    """Returns preview text for a workspace file (PDF or text)."""
-    from backend.tools import read_file
-    preview = read_file.func(filename)
-    return {"filename": filename, "content": preview[:2500]}
+    """Returns preview text for a workspace file (PDF or text) from disk or database."""
+    safe_name = os.path.basename(filename)
+    target = (WORKSPACE_PATH / safe_name).resolve()
+    if target.exists() and target.is_file():
+        from backend.tools import read_file
+        preview = read_file.func(safe_name)
+        return {"filename": safe_name, "content": preview[:2500], "source": "disk"}
+
+    # Ephemeral container fallback: retrieve text from database
+    db_file = await get_generated_file(safe_name)
+    if db_file:
+        return {"filename": safe_name, "content": db_file["content_text"][:2500], "source": "database"}
+
+    raise HTTPException(status_code=404, detail=f"Workspace file '{safe_name}' not found on disk or database.")
+
+
+@app.get("/api/workspace/files/{filename}/content")
+async def get_workspace_file_content(filename: str):
+    """Returns full text content for a file from disk or database."""
+    safe_name = os.path.basename(filename)
+    target = (WORKSPACE_PATH / safe_name).resolve()
+    if target.exists() and target.is_file():
+        try:
+            content = target.read_text(encoding="utf-8")
+            return {"filename": safe_name, "content": content, "source": "disk"}
+        except Exception:
+            pass
+
+    # Ephemeral container fallback: retrieve text from database
+    db_file = await get_generated_file(safe_name)
+    if db_file:
+        return {"filename": safe_name, "content": db_file["content_text"], "source": "database"}
+
+    raise HTTPException(status_code=404, detail=f"Workspace file '{safe_name}' not found on disk or database.")
 
 
 @app.get("/api/workspace/files/{filename}/download")
 async def download_workspace_file(filename: str):
-    """Safely downloads a generated file from the workspace/ directory."""
-    from fastapi.responses import FileResponse
+    """Safely downloads a generated file from the workspace/ directory or database."""
+    from fastapi.responses import FileResponse, Response
     safe_name = os.path.basename(filename)
     target = (WORKSPACE_PATH / safe_name).resolve()
-    if not str(target).startswith(str(WORKSPACE_PATH.resolve())) or not target.exists():
-        raise HTTPException(status_code=404, detail=f"Workspace file '{safe_name}' not found.")
-    return FileResponse(
-        path=target,
-        filename=safe_name,
-        media_type="application/octet-stream"
-    )
+    if str(target).startswith(str(WORKSPACE_PATH.resolve())) and target.exists() and target.is_file():
+        return FileResponse(
+            path=target,
+            filename=safe_name,
+            media_type="application/octet-stream"
+        )
+
+    # Ephemeral container fallback: retrieve text from database
+    db_file = await get_generated_file(safe_name)
+    if db_file:
+        text_bytes = db_file["content_text"].encode("utf-8")
+        return Response(
+            content=text_bytes,
+            media_type="text/plain; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{safe_name}"'}
+        )
+
+    raise HTTPException(status_code=404, detail=f"Workspace file '{safe_name}' not found.")
 
 
 # ==========================================
@@ -1012,7 +1089,7 @@ async def instantiate_workflow_from_template(template_id: str):
 
 @app.post("/api/approvals/{approval_id}")
 async def resolve_approval_endpoint(approval_id: str, req: ApprovalDecisionRequest):
-    """Resolves a human-in-the-loop approval request with 'approve' or 'reject'."""
+    """Resolves a human-in-the-loop approval request with 'approve' or 'reject' (idempotent)."""
     clean_id = approval_id.strip()
     if not clean_id or len(clean_id) < 3:
         raise HTTPException(status_code=400, detail="Invalid approval ID format.")
@@ -1021,19 +1098,20 @@ async def resolve_approval_endpoint(approval_id: str, req: ApprovalDecisionReque
     if decision not in ("approve", "reject"):
         raise HTTPException(status_code=400, detail="Decision must be 'approve' or 'reject'.")
 
-    success = approval_manager.resolve_approval(clean_id, decision)
-    await resolve_approval_record(clean_id, decision)
+    # Fast idempotent check: if already resolved in DB, return success immediately
+    db_appr = await get_approval_by_id(clean_id)
+    if db_appr and db_appr.get("status") in ("approve", "reject", "approved", "rejected"):
+        return {
+            "status": "success",
+            "approval_id": clean_id,
+            "decision": db_appr.get("decision") or db_appr.get("status"),
+            "already_resolved": True
+        }
 
-    if not success:
-        # Check if already resolved in DB
-        db_appr = await get_approval_by_id(clean_id)
-        if db_appr and db_appr.get("status") in ("approve", "reject", "approved", "rejected"):
-            return {
-                "status": "success",
-                "approval_id": clean_id,
-                "decision": db_appr.get("status"),
-                "already_resolved": True
-            }
+    success = approval_manager.resolve_approval(clean_id, decision)
+    db_success = await resolve_approval_record(clean_id, decision)
+
+    if not success and not db_success and not db_appr:
         raise HTTPException(status_code=404, detail="Approval request not found or expired.")
 
     return {"status": "success", "approval_id": clean_id, "decision": decision}
@@ -1188,8 +1266,8 @@ async def get_workflow_pending_approval(workflow_id: str):
     # Fallback to database lookup
     async with get_db() as db:
         cursor = await db.execute(
-            "SELECT * FROM approvals WHERE task_id = ? AND status = 'pending' ORDER BY created_at DESC LIMIT 1",
-            (workflow_id,)
+            "SELECT * FROM approvals WHERE (workflow_id = ? OR task_id = ?) AND status = 'pending' ORDER BY created_at DESC LIMIT 1",
+            (workflow_id, workflow_id)
         )
         row = await cursor.fetchone()
         if row:
@@ -1222,9 +1300,14 @@ async def cancel_workflow_execution(workflow_id: str):
 
 
 @app.get("/api/workflows/{workflow_id}/stream")
-async def stream_workflow_execution(workflow_id: str, dry_run: bool = Query(False)):
+async def stream_workflow_execution(
+    workflow_id: str,
+    dry_run: bool = Query(False),
+    run_id: Optional[str] = Query(None)
+):
     """
     Streams live step-by-step workflow execution over Server-Sent Events (SSE).
+    Resumes an existing run if run_id is supplied or an active run is pending.
     """
     wf = await get_workflow_by_id(workflow_id)
     if not wf:
@@ -1235,7 +1318,12 @@ async def stream_workflow_execution(workflow_id: str, dry_run: bool = Query(Fals
     except Exception:
         raise HTTPException(status_code=500, detail="Invalid stored workflow plan JSON.")
 
-    engine = WorkflowExecutionEngine(workflow_id, plan, dry_run=dry_run)
+    if not run_id:
+        active = await get_active_run_for_workflow(workflow_id)
+        if active:
+            run_id = active.get("id")
+
+    engine = WorkflowExecutionEngine(workflow_id, plan, dry_run=dry_run, run_id=run_id)
 
     async def sse_generator():
         try:
@@ -1254,6 +1342,63 @@ async def stream_workflow_execution(workflow_id: str, dry_run: bool = Query(Fals
             "X-Accel-Buffering": "no"
         }
     )
+
+
+# ==========================================
+# Workflow Execution Runs & History Endpoints
+# ==========================================
+
+@app.get("/api/runs")
+async def get_all_runs(
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    search: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
+    date_filter: Optional[str] = Query(None)
+):
+    """
+    Returns paginated workflow execution runs permanently persisted in SQLite or PostgreSQL,
+    supporting search, status filtering, and date range filtering.
+    """
+    runs = await list_workflow_runs(
+        limit=limit,
+        offset=offset,
+        search=search,
+        status=status,
+        date_filter=date_filter
+    )
+    total = await count_workflow_runs(
+        search=search,
+        status=status,
+        date_filter=date_filter
+    )
+    return {
+        "runs": runs,
+        "total": total,
+        "limit": limit,
+        "offset": offset
+    }
+
+
+@app.get("/api/runs/{run_id}")
+async def get_single_run(run_id: str):
+    """
+    Returns full metadata for a specific run, including executed steps,
+    parameters, duration, and generated files with text preview from the database.
+    """
+    run = await get_workflow_run_by_id(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found.")
+    return run
+
+
+@app.delete("/api/runs/{run_id}")
+async def delete_run(run_id: str):
+    """Permanently deletes a run and its recorded steps from the database."""
+    deleted = await delete_workflow_run(run_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found.")
+    return {"success": True, "message": f"Run '{run_id}' deleted successfully.", "id": run_id}
 
 
 # ==========================================

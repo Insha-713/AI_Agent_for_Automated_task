@@ -308,77 +308,15 @@ export default function WorkflowGraph({
                       </div>
                     )}
 
-                    {/* In-Step Action Buttons */}
-                    <div className="pt-1 flex flex-wrap items-center justify-end gap-2.5">
-                      <button
-                        type="button"
-                        onClick={async (e) => {
-                          e.stopPropagation();
-                          if (submittingDecision) return;
-                          setSubmittingDecision('reject');
-                          try {
-                            const apprId = pendingApproval?.approval_id || pendingApproval?.id;
-                            if (apprId) {
-                              await fetch(`/api/approvals/${apprId}`, {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ decision: 'reject' })
-                              });
-                            }
-                            if (onResolveApproval) {
-                              await onResolveApproval('reject', apprId);
-                            }
-                          } catch (err) {
-                            console.error('Error resolving approval:', err);
-                          } finally {
-                            setSubmittingDecision(null);
-                          }
-                        }}
-                        disabled={!!submittingDecision}
-                        className="px-4 py-2 rounded-xl bg-rose-500/20 hover:bg-rose-500/30 active:bg-rose-500/40 text-rose-300 hover:text-white border border-rose-500/40 text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-50"
-                      >
-                        {submittingDecision === 'reject' ? (
-                          <RotateCw className="w-3.5 h-3.5 animate-spin" />
-                        ) : (
-                          <X className="w-3.5 h-3.5" />
-                        )}
-                        <span>Reject Step</span>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={async (e) => {
-                          e.stopPropagation();
-                          if (submittingDecision) return;
-                          setSubmittingDecision('approve');
-                          try {
-                            const apprId = pendingApproval?.approval_id || pendingApproval?.id;
-                            if (apprId) {
-                              await fetch(`/api/approvals/${apprId}`, {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ decision: 'approve' })
-                              });
-                            }
-                            if (onResolveApproval) {
-                              await onResolveApproval('approve', apprId);
-                            }
-                          } catch (err) {
-                            console.error('Error resolving approval:', err);
-                          } finally {
-                            setSubmittingDecision(null);
-                          }
-                        }}
-                        disabled={!!submittingDecision}
-                        className="px-5 py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 hover:from-emerald-400 hover:to-cyan-400 text-white text-xs font-bold flex items-center gap-1.5 shadow-md shadow-emerald-500/30 transition-all hover:scale-[1.02] cursor-pointer disabled:opacity-50"
-                      >
-                        {submittingDecision === 'approve' ? (
-                          <RotateCw className="w-3.5 h-3.5 animate-spin" />
-                        ) : (
-                          <Check className="w-3.5 h-3.5" />
-                        )}
-                        <span>Approve &amp; Continue</span>
-                      </button>
+                    {/* Single Approval Card Rule: Informative status banner directing user to the dedicated card above */}
+                    <div className="pt-2 flex flex-wrap items-center justify-between gap-2 text-xs border-t border-amber-500/20 text-amber-200">
+                      <div className="flex items-center gap-2">
+                        <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping" />
+                        <span className="font-semibold text-amber-300">Awaiting Human Approval</span>
+                      </div>
+                      <span className="text-[11px] text-amber-200/80 bg-amber-500/10 px-2.5 py-1 rounded-lg border border-amber-500/20">
+                        Review parameters &amp; choose Approve or Reject in the card above 👆
+                      </span>
                     </div>
                   </div>
                 )}

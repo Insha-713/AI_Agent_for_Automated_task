@@ -16,10 +16,7 @@ import {
 import AgentBrain from '../components/AgentBrain';
 import VoiceInputButton from '../components/VoiceInputButton';
 import WorkspaceUpload from '../components/WorkspaceUpload';
-
-const API_BASE_URL =
-  import.meta.env.VITE_API_BASE_URL ||
-  "http://127.0.0.1:8080";
+import { getApiUrl } from '../api/config';
   
 export default function TaskPage({ onTaskCompleted }) {
   const [prompt, setPrompt] = useState('');
@@ -101,7 +98,7 @@ export default function TaskPage({ onTaskCompleted }) {
 
     try {
       // Step 1: Create task in backend SQLite
-      const resp = await fetch(`${API_BASE_URL}/api/tasks`, {
+      const resp = await fetch(getApiUrl('/api/tasks'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prompt: textToRun, deep_research: isDeepResearch })
@@ -117,7 +114,7 @@ export default function TaskPage({ onTaskCompleted }) {
 
       // Step 2: Connect to Server-Sent Events (SSE) stream with deep_research query param
       const sse = new EventSource(
-        `${API_BASE_URL}/api/tasks/${taskId}/stream?deep_research=${isDeepResearch}`
+        getApiUrl(`/api/tasks/${taskId}/stream?deep_research=${isDeepResearch}`)
       );
       eventSourceRef.current = sse;
 

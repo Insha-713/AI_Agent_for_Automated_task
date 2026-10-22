@@ -198,27 +198,49 @@ Access the application at **[http://localhost:8000](http://localhost:8000)**.
 
 ### Option C: Cloud Deployment (Render / Cloud Hosts)
 
-Ollama does not exist on cloud hosting platforms like Render. AgentFlow provides an **LLM Provider Layer** that lets you switch between local Ollama and cloud AI models (Groq, Google Gemini) via environment variables at call time.
+#### Why History Disappears on Render's Free Plan (And the Fix)
+On Render's free tier, backend web services run inside **ephemeral containers**. Every time the service spins down due to inactivity, restarts, or deploys a new commit, Render wipes the container's disk completely. Any local SQLite file (`agentflow.db`) and files saved in `workspace/` are erased!
 
-#### Variables to Add on Render:
+AgentFlow solves this with **Dual-Mode Persistent Storage**:
+1. **Local Default**: Without any configuration, AgentFlow automatically uses local SQLite (`backend/agentflow.db`).
+2. **Cloud PostgreSQL**: When `DATABASE_URL` is set, AgentFlow seamlessly connects to external PostgreSQL (Render Postgres, Neon, Supabase) via connection pooling, creates all tables automatically on startup (`workflow_runs`, `workflow_run_steps`, `generated_files`, `approvals`, `schedules`, `templates`, etc.), and persists every execution run, step output, approval record, and generated file text permanently across container restarts.
+
+#### How to Create a Free Persistent PostgreSQL Database:
+1. **On Render**:
+   - Go to your [Render Dashboard](https://dashboard.render.com/) -> Click **New +** -> **PostgreSQL**.
+   - Name it (e.g. `agentflow-db`), choose the Free Tier, and click **Create Database**.
+   - Copy the **Internal Database URL** (or External Database URL if hosted separately).
+2. **Or on Neon (Free Serverless Postgres)**:
+   - Sign up at [neon.tech](https://neon.tech/) and create a free project.
+   - Copy the PostgreSQL connection string (`postgresql://user:pass@ep-xyz.neon.tech/neondb?sslmode=require`).
+
+#### Variables to Add on Render (Web Service Settings):
 
 | Variable | Required | Description | Example / Recommended Value |
 | :--- | :--- | :--- | :--- |
 | `LLM_PROVIDER` | **Yes** | Active cloud provider (`groq` or `gemini`) | `groq` |
-| `GROQ_API_KEY` | If using Groq | Free API Key from [console.groq.com](https://console.groq.com) | *(Your secret API key)* |
-| `GEMINI_API_KEY` | If using Gemini| Free API Key from [aistudio.google.com](https://aistudio.google.com) | *(Your secret API key)* |
+| `GROQ_API_KEY` | If using Groq | Free API Key from [console.groq.com](https://console.groq.com) | *(Your Groq API key)* |
+| `GEMINI_API_KEY` | If using Gemini| Free API Key from [aistudio.google.com](https://aistudio.google.com) | *(Your Gemini API key)* |
+| `DATABASE_URL` | **Yes (for history)** | External PostgreSQL connection URL | `postgresql://user:pass@ep-xyz.neon.tech/neondb?sslmode=require` |
+| `ALLOWED_ORIGINS` | **Yes (for CORS)** | Vercel domain allowing cross-origin requests | `https://ai-agent-for-automated-task.vercel.app` |
 | `LLM_MODEL` | Optional | Custom model name | `llama-3.3-70b-versatile` or `gemini-1.5-flash` |
-| `WORKSPACE_DIR` | Optional | Local storage folder for files | `workspace` |
+| `WORKSPACE_DIR` | Optional | Sandboxed file directory | `workspace` |
 | `EMAIL_USER` | Optional | Gmail address for sending emails | `your-email@gmail.com` |
 | `EMAIL_PASS` | Optional | 16-char Google App Password | `abcd efgh ijkl mnop` |
 | `TELEGRAM_BOT_TOKEN` | Optional | Bot token from @BotFather | `123456789:ABCDefgh...` |
 | `TELEGRAM_CHAT_ID` | Optional | Your Telegram chat ID | `987654321` |
 
-> **Note on Render Setup**:
+#### Variables to Add on Vercel (Frontend Deployment):
+| Variable | Required | Description | Value |
+| :--- | :--- | :--- | :--- |
+| `VITE_API_URL` | **Yes** | Your deployed Render backend URL | `https://ai-agent-for-automated-task.onrender.com` |
+
+> **Render Service Configuration**:
 > 1. Set **Build Command**: `pip install -r requirements.txt && npm --prefix frontend install && npm --prefix frontend run build`
-> 2. Set **Start Command**: `uvicorn backend.main:app --host 0.0.0.0 --port $PORT`
-> 3. Under **Environment Variables**, add `LLM_PROVIDER=groq` and `GROQ_API_KEY=...` (or `LLM_PROVIDER=gemini` and `GEMINI_API_KEY=...`).
-> 4. If no LLM is configured or available, AgentFlow displays a clear notice: *"No LLM available on this server. Set LLM_PROVIDER and an API key."* and seamlessly executes all tool-only workflows without failing.
+> 2. Set **Start Command**: `uvicorn backend.main:app --host 0.0.0.0 --port $PORT --workers 1`
+> 3. Under **Environment Variables**, add the variables listed above.
+> 4. Check **`/api/health`** on your Render URL to confirm:
+>    `"database": {"type": "postgres", "writable": true, "stored_runs_count": N}`.
 
 ---
 

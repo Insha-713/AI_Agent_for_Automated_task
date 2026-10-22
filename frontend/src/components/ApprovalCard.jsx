@@ -13,6 +13,7 @@ import {
   Clock,
   Sparkles
 } from 'lucide-react';
+import { getApiUrl } from '../api/config';
 
 export default function ApprovalCard({ approval, onResolve, dryRun = false }) {
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -40,7 +41,8 @@ export default function ApprovalCard({ approval, onResolve, dryRun = false }) {
         throw new Error("Missing approval ID.");
       }
 
-      const resp = await fetch(`/api/approvals/${apprId}`, {
+      const approvalUrl = getApiUrl(`/api/approvals/${apprId}`);
+      const resp = await fetch(approvalUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ decision })
@@ -48,13 +50,15 @@ export default function ApprovalCard({ approval, onResolve, dryRun = false }) {
 
       if (!resp.ok) {
         const errData = await resp.json().catch(() => ({}));
-        throw new Error(errData.detail || `Failed to submit ${decision} decision (${resp.status})`);
+        const reason = errData.detail || resp.statusText || 'Unknown server error';
+        throw new Error(`HTTP ${resp.status}: ${reason}`);
       }
 
+      const resData = await resp.json().catch(() => ({}));
       setResolvedDecision(decision);
       if (onResolve) {
-        // Pass decision, approval ID, and flag indicating it has already been submitted
-        onResolve(decision, apprId, true);
+        // Pass decision, approval ID, flag indicating it has already been submitted, and result payload
+        onResolve(decision, apprId, true, resData);
       }
     } catch (err) {
       console.error('Failed to resolve approval:', err);

@@ -44,6 +44,7 @@ import VoiceInputButton from '../components/VoiceInputButton';
 import QuestionsPanel from '../components/QuestionsPanel';
 import FlowProgressBar from '../components/FlowProgressBar';
 import ApprovalCard from '../components/ApprovalCard';
+import { getApiUrl } from '../api/config';
 import { FALLBACK_TEMPLATES } from './SettingsPage';
 
 const WORKFLOW_TEMPLATES = [
@@ -120,6 +121,7 @@ export default function WorkflowsPage({ onOpenIntegrations = () => {} }) {
   const [isSavingQuickCreds, setIsSavingQuickCreds] = useState(false);
   const [quickCredsError, setQuickCredsError] = useState('');
   const [quickCredsSuccess, setQuickCredsSuccess] = useState('');
+  const [activeRunId, setActiveRunId] = useState(null);
   const eventSourceRef = useRef(null);
   const logContainerRef = useRef(null);
 
@@ -177,7 +179,7 @@ export default function WorkflowsPage({ onOpenIntegrations = () => {} }) {
       if (search && search.trim()) params.append('search', search.trim());
       const queryStr = params.toString();
       const url = queryStr ? `/api/workflows?${queryStr}` : '/api/workflows';
-      const res = await fetch(url);
+      const res = await fetch(getApiUrl(url));
       if (res.ok) {
         const data = await res.json();
         setWorkflowsHistory(data.workflows || []);
@@ -339,7 +341,7 @@ export default function WorkflowsPage({ onOpenIntegrations = () => {} }) {
           `[${new Date().toLocaleTimeString()}] 🏁 Workflow finished with status: COMPLETED in 2.8s`
         ]);
       } else if (wfId) {
-        fetch(`/api/workflows/${wfId}`)
+        fetch(getApiUrl(`/api/workflows/${wfId}`))
           .then(r => r.json())
           .then(data => {
             if (data && data.plan) {
@@ -357,7 +359,7 @@ export default function WorkflowsPage({ onOpenIntegrations = () => {} }) {
       } else if (params.get('template')) {
         const tplId = params.get('template');
         const fallback = FALLBACK_TEMPLATES.find(t => t.id === tplId);
-        fetch(`/api/templates/${tplId}`)
+        fetch(getApiUrl(`/api/templates/${tplId}`))
           .then(r => r.json())
           .then(tpl => {
             const promptText = (tpl && tpl.prompt) || (fallback && fallback.prompt);
@@ -385,7 +387,7 @@ export default function WorkflowsPage({ onOpenIntegrations = () => {} }) {
         const tplId = params.get('template');
         if (tplId) {
           const fallback = FALLBACK_TEMPLATES.find(t => t.id === tplId);
-          fetch(`/api/templates/${tplId}`)
+          fetch(getApiUrl(`/api/templates/${tplId}`))
             .then(r => r.json())
             .then(tpl => {
               const promptText = (tpl && tpl.prompt) || (fallback && fallback.prompt);
@@ -411,7 +413,7 @@ export default function WorkflowsPage({ onOpenIntegrations = () => {} }) {
   // Recover active pending approval when workflow plan is loaded or on refresh
   useEffect(() => {
     if (!currentPlan || !currentPlan.workflow_id) return;
-    fetch(`/api/workflows/${currentPlan.workflow_id}/pending-approval`)
+    fetch(getApiUrl(`/api/workflows/${currentPlan.workflow_id}/pending-approval`))
       .then(r => r.ok ? r.json() : null)
       .then(data => {
         if (data && (data.approval_id || data.id)) {
@@ -430,7 +432,7 @@ export default function WorkflowsPage({ onOpenIntegrations = () => {} }) {
   const handleDeduplicate = async () => {
     setIsDeduplicating(true);
     try {
-      const res = await fetch('/api/workflows/deduplicate', { method: 'POST' });
+      const res = await fetch(getApiUrl('/api/workflows/deduplicate'), { method: 'POST' });
       if (res.ok) {
         await fetchWorkflows();
       }
@@ -448,7 +450,7 @@ export default function WorkflowsPage({ onOpenIntegrations = () => {} }) {
       const url = statusToDelete && statusToDelete !== 'all' 
         ? `/api/workflows?status=${statusToDelete}` 
         : '/api/workflows';
-      const res = await fetch(url, { method: 'DELETE' });
+      const res = await fetch(getApiUrl(url), { method: 'DELETE' });
       if (res.ok) {
         await fetchWorkflows();
       }
@@ -469,7 +471,7 @@ export default function WorkflowsPage({ onOpenIntegrations = () => {} }) {
     setSelectedStep(null);
 
     try {
-      const res = await fetch('/api/workflows/generate', {
+      const res = await fetch(getApiUrl('/api/workflows/generate'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prompt: textToUse })
@@ -500,7 +502,7 @@ export default function WorkflowsPage({ onOpenIntegrations = () => {} }) {
     setQuestionsSession(null);
 
     try {
-      const res = await fetch('/api/workflows/extract-requirements', {
+      const res = await fetch(getApiUrl('/api/workflows/extract-requirements'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prompt: textToUse })
@@ -533,7 +535,7 @@ export default function WorkflowsPage({ onOpenIntegrations = () => {} }) {
     setErrorMsg('');
 
     try {
-      const res = await fetch('/api/workflows/answer-question', {
+      const res = await fetch(getApiUrl('/api/workflows/answer-question'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -587,11 +589,13 @@ export default function WorkflowsPage({ onOpenIntegrations = () => {} }) {
     if (!currentPlan || !currentPlan.workflow_id) return;
 
     setIsRunning(true);
+    setPendingApproval(null);
     setErrorMsg('');
     setLogs([]);
     setRunResult(null);
 
-    const streamUrl = `/api/workflows/${currentPlan.workflow_id}/stream?dry_run=${dryRun ? 'true' : 'false'}`;
+    const runParam = activeRunId ? `&run_id=${encodeURIComponent(activeRunId)}` : '';
+    const streamUrl = getApiUrl(`/api/workflows/${currentPlan.workflow_id}/stream?dry_run=${dryRun ? 'true' : 'false'}${runParam}`);
     const es = new EventSource(streamUrl);
     eventSourceRef.current = es;
 
@@ -601,6 +605,9 @@ export default function WorkflowsPage({ onOpenIntegrations = () => {} }) {
         const timestamp = new Date().toLocaleTimeString();
 
         if (data.type === 'workflow_start') {
+          if (data.run_id) {
+            setActiveRunId(data.run_id);
+          }
           setLogs((prev) => [...prev, `[${timestamp}] 🚀 Workflow started: "${data.title}" (Dry-run: ${data.dry_run})`]);
         } else if (data.type === 'step_start') {
           setActiveStepId(data.step_id);
@@ -645,6 +652,9 @@ export default function WorkflowsPage({ onOpenIntegrations = () => {} }) {
           // Keep-alive heartbeat from backend while awaiting approval
         } else if (data.type === 'approval_required') {
           setPendingApproval(data);
+          if (data.run_id) {
+            setActiveRunId(data.run_id);
+          }
           setActiveStepId(data.step_id);
           setCurrentPlan((prev) => {
             if (!prev) return prev;
@@ -726,7 +736,7 @@ export default function WorkflowsPage({ onOpenIntegrations = () => {} }) {
   const handleCancelWorkflow = async () => {
     if (!currentPlan) return;
     try {
-      await fetch(`/api/workflows/${currentPlan.workflow_id}/cancel`, { method: 'POST' });
+      await fetch(getApiUrl(`/api/workflows/${currentPlan.workflow_id}/cancel`), { method: 'POST' });
       setLogs((prev) => [...prev, `[${new Date().toLocaleTimeString()}] Requesting cancellation...`]);
     } catch (e) {
       console.warn('Failed to cancel workflow:', e);
@@ -737,7 +747,7 @@ export default function WorkflowsPage({ onOpenIntegrations = () => {} }) {
     if (!currentPlan) return;
     setIsSavingTemplate(true);
     try {
-      const res = await fetch('/api/templates', {
+      const res = await fetch(getApiUrl('/api/templates'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -770,7 +780,7 @@ export default function WorkflowsPage({ onOpenIntegrations = () => {} }) {
 
   const handleLoadSavedWorkflow = async (wf) => {
     try {
-      const res = await fetch(`/api/workflows/${wf.id}`);
+      const res = await fetch(getApiUrl(`/api/workflows/${wf.id}`));
       if (res.ok) {
         const fullWf = await res.json();
         setCurrentPlan(fullWf.plan);
@@ -786,7 +796,7 @@ export default function WorkflowsPage({ onOpenIntegrations = () => {} }) {
   const handleDeleteWorkflow = async (e, wfId) => {
     e.stopPropagation();
     try {
-      const res = await fetch(`/api/workflows/${wfId}`, { method: 'DELETE' });
+      const res = await fetch(getApiUrl(`/api/workflows/${wfId}`), { method: 'DELETE' });
       if (res.ok) {
         if (currentPlan && currentPlan.workflow_id === wfId) {
           setCurrentPlan(null);
@@ -808,12 +818,12 @@ export default function WorkflowsPage({ onOpenIntegrations = () => {} }) {
     // Log decision immediately in UI
     setLogs((prev) => [
       ...prev,
-      `[${timestamp}] ⚖️ Human Approval decision recorded: ${decision.toUpperCase()}`
+      `[${timestamp}] 👤 Human Approval decision recorded: ${decision.toUpperCase()}`
     ]);
 
     try {
       if (!alreadySubmitted) {
-        const res = await fetch(`/api/approvals/${approvalIdToUse}`, {
+        const res = await fetch(getApiUrl(`/api/approvals/${approvalIdToUse}`), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ decision })
@@ -825,8 +835,10 @@ export default function WorkflowsPage({ onOpenIntegrations = () => {} }) {
         }
       }
 
+      // Hide approval card immediately once decision is recorded (Requirement 1)
+      setPendingApproval(null);
+
       if (decision === 'reject') {
-        setPendingApproval(null);
         setIsRunning(false);
         setActiveStepId(null);
         setRunResult({
@@ -861,7 +873,7 @@ export default function WorkflowsPage({ onOpenIntegrations = () => {} }) {
     setIsSavingQuickCreds(true);
     setQuickCredsError('');
     try {
-      const resp = await fetch('/api/integrations/credentials/email', {
+      const resp = await fetch(getApiUrl('/api/integrations/credentials/email'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -909,7 +921,7 @@ export default function WorkflowsPage({ onOpenIntegrations = () => {} }) {
     setIsSubmittingSchedule(true);
     setErrorMsg('');
     try {
-      const res = await fetch('/api/schedules', {
+      const res = await fetch(getApiUrl('/api/schedules'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
