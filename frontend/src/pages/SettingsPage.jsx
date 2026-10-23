@@ -8,6 +8,7 @@ import {
   Sparkles,
   CheckCircle2,
   AlertCircle,
+  AlertTriangle,
   RefreshCw,
   ShieldCheck,
   Cpu,
@@ -259,6 +260,24 @@ export const FALLBACK_TEMPLATES = [
     prompt: "Analyze workspace/samples/freelance_agency_expenses.csv, show spending by category and payment method, and save the report to workspace/expense_report.md.",
     tools_used: ["analyze_tabular_data", "save_file"],
     required_credentials: [],
+    requires_approval: true,
+    is_builtin: true
+  },
+  {
+    id: "tpl-resume-job-assistant",
+    title: "Resume & Job Application Assistant",
+    category: "Career",
+    badge: "Job Seekers",
+    icon: "Briefcase",
+    description: "Upload resume (PDF/DOCX) and target job description to get an ATS score (out of 100), job match score, keyword gap analysis, improved resume without inventing facts, tailored cover letter, and application email draft sent to inshaf713@gmail.com upon approval.",
+    prompt: "Analyze my resume for target job description, compute ATS score, extract keyword gaps, create tailored cover letter and improved resume without inventing facts, and email report to inshaf713@gmail.com.",
+    tools_used: ["analyze_resume_and_job", "save_file", "send_email"],
+    required_credentials: ["EMAIL_USER", "EMAIL_PASS"],
+    default_inputs: {
+      resume_filename: "resume.pdf",
+      job_description: "Software Engineer / AI Application Developer (Python, FastAPI, React, SQL, Git)",
+      receiver_email: "inshaf713@gmail.com"
+    },
     requires_approval: true,
     is_builtin: true
   }

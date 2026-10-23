@@ -49,6 +49,12 @@ import { FALLBACK_TEMPLATES } from './SettingsPage';
 
 const WORKFLOW_TEMPLATES = [
   {
+    title: 'Resume & Job Application Assistant',
+    category: 'Career & Jobs',
+    prompt: 'Analyze my resume for target job description, calculate ATS score out of 100, identify missing keywords, generate improved resume & cover letter without inventing facts, and email report to inshaf713@gmail.com',
+    badge: 'ATS & Career'
+  },
+  {
     title: 'Daily AI News Digest',
     category: 'News & Media',
     prompt: 'Check current IST time, fetch latest AI news in India, and save to workspace/ai_daily_news.txt',
@@ -494,9 +500,15 @@ export default function WorkflowsPage({ onOpenIntegrations = () => {} }) {
     setErrorMsg('');
     setIsGenerating(true);
     setCurrentPlan(null);
+    setActiveRunId(null);
+    setRunResult(null);
+    setPendingApproval(null);
     setLogs([]);
     setActiveStepId(null);
     setSelectedStep(null);
+    try {
+      sessionStorage.removeItem('agentflow_active_workflow_state');
+    } catch (_) {}
 
     try {
       const res = await fetch(getApiUrl('/api/workflows/generate'), {
@@ -527,7 +539,13 @@ export default function WorkflowsPage({ onOpenIntegrations = () => {} }) {
 
     setErrorMsg('');
     setIsExtracting(true);
+    setActiveRunId(null);
+    setRunResult(null);
+    setPendingApproval(null);
     setQuestionsSession(null);
+    try {
+      sessionStorage.removeItem('agentflow_active_workflow_state');
+    } catch (_) {}
 
     try {
       const res = await fetch(getApiUrl('/api/workflows/extract-requirements'), {
@@ -774,9 +792,9 @@ export default function WorkflowsPage({ onOpenIntegrations = () => {} }) {
     setErrorMsg('');
     setLogs([]);
     setRunResult(null);
+    setActiveRunId(null);
 
-    const runParam = activeRunId ? `&run_id=${encodeURIComponent(activeRunId)}` : '';
-    const streamUrl = getApiUrl(`/api/workflows/${currentPlan.workflow_id}/stream?dry_run=${dryRun ? 'true' : 'false'}${runParam}`);
+    const streamUrl = getApiUrl(`/api/workflows/${currentPlan.workflow_id}/stream?dry_run=${dryRun ? 'true' : 'false'}`);
     connectEventSource(streamUrl);
   };
 
@@ -880,6 +898,9 @@ export default function WorkflowsPage({ onOpenIntegrations = () => {} }) {
 
   const handleLoadSavedWorkflow = async (wf) => {
     try {
+      setActiveRunId(null);
+      setRunResult(null);
+      setPendingApproval(null);
       const res = await fetch(getApiUrl(`/api/workflows/${wf.id}`));
       if (res.ok) {
         const fullWf = await res.json();

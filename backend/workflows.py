@@ -48,6 +48,7 @@ from backend.tools import (
     check_website_health,
     get_weather,
     read_important_emails,
+    analyze_resume_and_job,
     WORKSPACE_PATH,
     _safe_workspace_path,
 )
@@ -205,6 +206,14 @@ REGISTERED_TOOLS_META = {
         "required_credentials": ["EMAIL_USER", "EMAIL_PASS"],
         "func": read_important_emails.func if hasattr(read_important_emails, "func") else read_important_emails,
     },
+    "analyze_resume_and_job": {
+        "display_name": "Analyze Resume & Match Job Description",
+        "description": "Parses PDF/DOCX resume, evaluates ATS compatibility (out of 100) and job match score, extracts skills/experience, identifies keyword gaps, and crafts optimized resume and tailored cover letter without inventing facts.",
+        "params": {"resume_filename": "str", "job_description": "str"},
+        "requires_approval": False,
+        "required_credentials": [],
+        "func": analyze_resume_and_job.func if hasattr(analyze_resume_and_job, "func") else analyze_resume_and_job,
+    },
 }
 
 
@@ -323,6 +332,20 @@ def extract_known_entities(prompt: str) -> Dict[str, Any]:
     if crit_keywords:
         known["important_criteria"] = ", ".join(crit_keywords)
 
+    # 4. Resume & Job Description extraction
+    doc_m = re.search(r"([\w\-]+\.(?:pdf|docx|doc|txt))", prompt, re.IGNORECASE)
+    if doc_m and "{resume" not in prompt:
+        known["resume_filename"] = doc_m.group(1).strip()
+
+    if any(w in p_lower for w in ["resume", "cv", "job application", "ats", "job match"]):
+        for pattern in [r"(?:for|role|job|position|applying as)\s+([a-zA-Z0-9\s,\/\-\+]+?)(?:\s+(?:and|with|to|in|\.|$))", r"job description:?\s*(.+)$"]:
+            jm = re.search(pattern, prompt, re.IGNORECASE)
+            if jm:
+                cand_jd = jm.group(1).strip()
+                if len(cand_jd) >= 4 and cand_jd.lower() not in ["my resume", "the job", "internship"]:
+                    known["job_description"] = cand_jd
+                    break
+
     return known
 
 
@@ -349,8 +372,16 @@ async def extract_workflow_requirements(prompt: str, user_context: Optional[Dict
     # Step 2: Detect Registered Tools Needed
     tools_needed: List[str] = []
 
+    # Resume & Job Application detection
+    if any(w in p_lower for w in ["resume", "cv", "job application", "ats", "job match", "cover letter", "job description"]):
+        tools_needed.append("analyze_resume_and_job")
+        if "save_file" not in tools_needed:
+            tools_needed.append("save_file")
+        if any(w in p_lower for w in ["email", "mail", "gmail", "bhejo"]) and "send_email" not in tools_needed:
+            tools_needed.append("send_email")
+
     # Weather detection
-    if any(w in p_lower for w in ["weather", "temperature", "forecast", "mausam", "rain"]):
+    elif any(w in p_lower for w in ["weather", "temperature", "forecast", "mausam", "rain"]):
         tools_needed.append("get_weather")
 
     # Important emails detection
@@ -415,6 +446,41 @@ async def extract_workflow_requirements(prompt: str, user_context: Optional[Dict
 
     # Step 4: Formulate Questions for Missing Inputs (Strictly only what is missing!)
     questions: List[Dict[str, Any]] = []
+
+    # 0. Resume Questions: Resume File & Target Job Description
+    if "analyze_resume_and_job" in tools_needed:
+        if "resume_filename" not in known_inputs:
+            existing_resumes = [
+                f.name for f in WORKSPACE_PATH.glob("*")
+                if f.is_file() and f.suffix.lower() in (".pdf", ".docx", ".doc", ".txt")
+            ]
+            replies = existing_resumes[:4] if existing_resumes else ["resume.pdf", "resume.docx"]
+            questions.append({
+                "id": "q_resume_filename",
+                "field": "resume_filename",
+                "question": "Please upload or specify your resume file (PDF or DOCX):",
+                "placeholder": "e.g., resume.pdf, resume.docx",
+                "input_type": "text",
+                "quick_replies": replies,
+                "is_secret": False,
+                "help_text": "Upload your resume using the Workspace Uploader, or choose an existing document in workspace/."
+            })
+        if "job_description" not in known_inputs:
+            questions.append({
+                "id": "q_job_description",
+                "field": "job_description",
+                "question": "What is the target job title or internship description you are applying for?",
+                "placeholder": "e.g., Software Engineer (Python, FastAPI, React, SQL, Git)",
+                "input_type": "text",
+                "quick_replies": [
+                    "Software Engineer (Python, FastAPI, React, SQL)",
+                    "AI / ML Developer (Python, LLMs, PyTorch, LangChain)",
+                    "Full-Stack Web Developer (React, Node.js, TypeScript)",
+                    "Data Science & Analytics Intern (Python, SQL, Pandas)"
+                ],
+                "is_secret": False,
+                "help_text": "AgentFlow compares your resume against these requirements to compute your ATS and Job-Match scores."
+            })
 
     # 1. Weather Question: City
     if "get_weather" in tools_needed and "city" not in known_inputs:
@@ -791,6 +857,70 @@ def generate_fallback_plan(prompt: str) -> Dict[str, Any]:
     """
     p_lower = prompt.lower()
     steps = []
+
+    # Check for resume & job application request
+    needs_resume = any(w in p_lower for w in [
+        "resume", "cv", "job application", "ats", "job match", "cover letter", 
+        "internship application", "job description", "interview prep", "job assistant"
+    ])
+    if needs_resume:
+        fn_match = re.search(r"([\w\-]+\.(?:pdf|docx|doc|txt))", prompt, re.IGNORECASE)
+        resume_fn = fn_match.group(1) if fn_match else "resume.pdf"
+
+        job_desc = "Software Engineer / AI Application Developer (Python, FastAPI, React, SQL, Git)"
+        if "for" in p_lower:
+            parts = prompt.split("for", 1)
+            if len(parts) > 1 and len(parts[1].strip()) > 5:
+                job_desc = parts[1].strip()
+
+        steps.append({
+            "id": "step_1",
+            "tool": "analyze_resume_and_job",
+            "name": "Analyze Resume & Match Target Job Description",
+            "params": {
+                "resume_filename": resume_fn,
+                "job_description": job_desc
+            },
+            "output_key": "resume_analysis",
+            "requires_approval": False,
+            "required_credentials": []
+        })
+
+        steps.append({
+            "id": "step_2",
+            "tool": "save_file",
+            "name": "Save Analysis Report to workspace/resume_analysis_report.md",
+            "params": {
+                "filename": "resume_analysis_report.md",
+                "content": "{{resume_analysis}}",
+                "overwrite": True
+            },
+            "output_key": "saved_report",
+            "requires_approval": False,
+            "required_credentials": []
+        })
+
+        email_match = re.search(r"[\w\.-]+@[\w\.-]+\.\w+", prompt)
+        to_email = email_match.group(0) if email_match else "inshaf713@gmail.com"
+        steps.append({
+            "id": "step_3",
+            "tool": "send_email",
+            "name": f"Email Resume Analysis & Application Kit to {to_email}",
+            "params": {
+                "to_email": to_email,
+                "subject": "AgentFlow: Resume & Job Application Analysis Report",
+                "body": f"Hello,\n\nHere is your comprehensive Resume & Job Application Analysis Report and tailored application materials:\n\n{{{{resume_analysis}}}}\n\nGenerated autonomously by AgentFlow."
+            },
+            "output_key": "email_confirmation",
+            "requires_approval": True,
+            "required_credentials": ["EMAIL_USER", "EMAIL_PASS"]
+        })
+
+        return {
+            "title": "Resume & Job Application Assistant",
+            "description": "Parses resume (PDF/DOCX), evaluates ATS score (out of 100), extracts keyword gaps, crafts improved resume & tailored cover letter without inventing facts, and emails the complete report.",
+            "steps": steps
+        }
 
     # Check for weather request
     needs_weather = any(w in p_lower for w in ["weather", "temperature", "forecast", "mausam", "rain"])
@@ -1365,7 +1495,7 @@ class WorkflowExecutionEngine:
 
         # Resume state if this run was already in progress (e.g., reconnected stream)
         existing_run = await get_workflow_run_by_id(self.run_id)
-        if existing_run:
+        if existing_run and existing_run.get("workflow_id") == self.workflow_id:
             if existing_run.get("step_results"):
                 self.step_context.update(existing_run["step_results"])
             if existing_run.get("step_logs"):
