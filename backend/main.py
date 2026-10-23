@@ -42,6 +42,7 @@ from backend.db import (
     get_schedule_from_db,
     save_workflow,
     get_workflow_by_id,
+    update_workflow_status,
     list_all_workflows,
     delete_workflow_by_id,
     delete_all_workflows,
@@ -62,6 +63,9 @@ from backend.db import (
     count_workflow_runs,
     list_workflow_runs,
     get_workflow_run_by_id,
+    update_workflow_run_record,
+    cancel_pending_approvals_for_run,
+    cancel_pending_approvals_for_workflow,
     delete_workflow_run,
     get_active_run_for_workflow,
     get_generated_file,
@@ -1257,18 +1261,28 @@ async def get_workflow_details(workflow_id: str):
 
 
 @app.get("/api/workflows/{workflow_id}/pending-approval")
-async def get_workflow_pending_approval(workflow_id: str):
+async def get_workflow_pending_approval(workflow_id: str, run_id: Optional[str] = Query(None)):
     """Returns the active pending approval for a given workflow, if any."""
     pending = approval_manager.get_pending_by_workflow(workflow_id)
-    if pending:
+    if pending and (not run_id or pending.get("run_id") == run_id):
         return pending
 
     # Fallback to database lookup
     async with get_db() as db:
-        cursor = await db.execute(
-            "SELECT * FROM approvals WHERE (workflow_id = ? OR task_id = ?) AND status = 'pending' ORDER BY created_at DESC LIMIT 1",
-            (workflow_id, workflow_id)
-        )
+        if run_id:
+            cursor = await db.execute(
+                "SELECT * FROM approvals WHERE (workflow_id = ? OR task_id = ?) AND run_id = ? AND status = 'pending' ORDER BY created_at DESC LIMIT 1",
+                (workflow_id, workflow_id, run_id)
+            )
+        else:
+            cursor = await db.execute("""
+                SELECT a.* FROM approvals a
+                JOIN workflow_runs r ON a.run_id = r.id
+                WHERE (a.workflow_id = ? OR a.task_id = ?)
+                  AND a.status = 'pending'
+                  AND r.status IN ('running', 'waiting_for_approval')
+                ORDER BY a.created_at DESC LIMIT 1
+            """, (workflow_id, workflow_id))
         row = await cursor.fetchone()
         if row:
             d = dict(row)
@@ -1296,7 +1310,34 @@ async def delete_workflow(workflow_id: str):
 async def cancel_workflow_execution(workflow_id: str):
     """Cancels a currently active workflow execution."""
     ACTIVE_CANCELLATIONS.add(workflow_id)
+    approval_manager.cancel_pending_for_workflow(workflow_id)
+    await cancel_pending_approvals_for_workflow(workflow_id)
+    active = await get_active_run_for_workflow(workflow_id)
+    if active:
+        run_id = active.get("id")
+        if run_id:
+            ACTIVE_CANCELLATIONS.add(run_id)
+            approval_manager.cancel_pending_for_run(run_id)
+            await cancel_pending_approvals_for_run(run_id)
+            await update_workflow_run_record(run_id=run_id, status="cancelled")
+    await update_workflow_status(workflow_id, "cancelled")
     return {"message": f"Cancellation requested for workflow '{workflow_id}'."}
+
+
+@app.post("/api/runs/{run_id}/cancel")
+async def cancel_run_endpoint(run_id: str):
+    """Cancels a specific active workflow run by run_id."""
+    ACTIVE_CANCELLATIONS.add(run_id)
+    approval_manager.cancel_pending_for_run(run_id)
+    await cancel_pending_approvals_for_run(run_id)
+    await update_workflow_run_record(run_id=run_id, status="cancelled")
+    run = await get_workflow_run_by_id(run_id)
+    if run and run.get("workflow_id"):
+        ACTIVE_CANCELLATIONS.add(run["workflow_id"])
+        approval_manager.cancel_pending_for_workflow(run["workflow_id"])
+        await cancel_pending_approvals_for_workflow(run["workflow_id"])
+        await update_workflow_status(run["workflow_id"], "cancelled")
+    return {"message": f"Cancellation requested for run '{run_id}'."}
 
 
 @app.get("/api/workflows/{workflow_id}/stream")

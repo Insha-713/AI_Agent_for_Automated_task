@@ -19,6 +19,7 @@ import uuid
 import asyncio
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, List, Optional, AsyncGenerator
+from contextvars import ContextVar
 from dotenv import load_dotenv
 
 from langchain_core.messages import SystemMessage, HumanMessage
@@ -71,8 +72,13 @@ from backend.db import (
 
 load_dotenv()
 
-# Active in-memory cancellations
+# Active in-memory cancellations (by workflow_id or run_id)
 ACTIVE_CANCELLATIONS: set = set()
+
+# ContextVar indicating that tool execution is currently orchestrated by WorkflowExecutionEngine.
+# When True, individual tools (send_email, save_file, send_telegram_message) must NEVER trigger
+# redundant secondary human-approval gates.
+WORKFLOW_EXECUTION_CONTEXT: ContextVar[bool] = ContextVar("WORKFLOW_EXECUTION_CONTEXT", default=False)
 
 # ==========================================
 # Registered Tools Specifications
@@ -1269,22 +1275,30 @@ class WorkflowExecutionEngine:
                 mock_res = f"SIMULATION: Step '{step['name']}' simulated in dry run."
                 return {"status": "completed", "result": mock_res, "mock": True, "displayStatus": "SIMULATION"}
 
-        # Execution with up to 2 retries and 30s timeout
-        max_retries = 2
+        # Bounded retries: sensitive actions (e.g. email, telegram, file write) must never retry blindly
+        is_sensitive = tool_name in ("send_email", "send_telegram_message", "save_file")
+        max_retries = 0 if is_sensitive else 1
+        step_timeout = 25.0
         last_error = None
 
         for attempt in range(max_retries + 1):
-            if self.is_cancelled:
+            if self.is_cancelled or self.workflow_id in ACTIVE_CANCELLATIONS or (self.run_id and self.run_id in ACTIVE_CANCELLATIONS):
+                self.is_cancelled = True
                 return {"status": "cancelled", "error": "Execution cancelled by user."}
 
             try:
                 # Execute tool function synchronously in threadpool with timeout
                 func = meta["func"]
                 loop = asyncio.get_running_loop()
-                result = await asyncio.wait_for(
-                    loop.run_in_executor(None, lambda: func(**resolved_params)),
-                    timeout=30.0
-                )
+                ctx_token = WORKFLOW_EXECUTION_CONTEXT.set(True)
+                try:
+                    result = await asyncio.wait_for(
+                        loop.run_in_executor(None, lambda: func(**resolved_params)),
+                        timeout=step_timeout
+                    )
+                finally:
+                    WORKFLOW_EXECUTION_CONTEXT.reset(ctx_token)
+
                 res_str = str(result).strip()
 
                 # Check for empty output
@@ -1323,11 +1337,13 @@ class WorkflowExecutionEngine:
                     "attempt": attempt + 1
                 }
             except asyncio.TimeoutError:
-                last_error = f"Step timed out after 30 seconds (attempt {attempt + 1}/{max_retries + 1})."
-                await asyncio.sleep(1.0)
+                last_error = f"Step timed out after {int(step_timeout)} seconds."
+                if attempt < max_retries:
+                    await asyncio.sleep(0.5)
             except Exception as e:
-                last_error = f"Error: {str(e)} (attempt {attempt + 1}/{max_retries + 1})"
-                await asyncio.sleep(1.0)
+                last_error = f"Error: {str(e)}"
+                if attempt < max_retries:
+                    await asyncio.sleep(0.5)
 
         return {"status": "failed", "error": last_error}
 
@@ -1369,15 +1385,19 @@ class WorkflowExecutionEngine:
         overall_status = "completed"
 
         for idx, step in enumerate(self.plan.get("steps", [])):
-            if self.workflow_id in ACTIVE_CANCELLATIONS:
+            if self.workflow_id in ACTIVE_CANCELLATIONS or (self.run_id and self.run_id in ACTIVE_CANCELLATIONS):
                 self.is_cancelled = True
                 ACTIVE_CANCELLATIONS.discard(self.workflow_id)
+                if self.run_id:
+                    ACTIVE_CANCELLATIONS.discard(self.run_id)
 
             if self.is_cancelled:
                 overall_status = "cancelled"
                 yield {
                     "type": "workflow_cancelled",
                     "step_id": step["id"],
+                    "workflow_id": self.workflow_id,
+                    "run_id": self.run_id,
                     "message": "Workflow run was cancelled."
                 }
                 break
@@ -1575,7 +1595,7 @@ class WorkflowExecutionEngine:
                 decision = None
 
                 while time.time() - start_wait < timeout:
-                    if self.workflow_id in ACTIVE_CANCELLATIONS:
+                    if self.workflow_id in ACTIVE_CANCELLATIONS or (self.run_id and self.run_id in ACTIVE_CANCELLATIONS):
                         self.is_cancelled = True
                         decision = "reject"
                         break

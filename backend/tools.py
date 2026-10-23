@@ -586,7 +586,8 @@ def save_file(filename: Optional[str] = None, content: str = "", overwrite: bool
 
         if target_path.exists():
             from backend.approvals import approval_manager
-            if approval_manager.has_active_listeners():
+            from backend.workflows import WORKFLOW_EXECUTION_CONTEXT
+            if not WORKFLOW_EXECUTION_CONTEXT.get() and approval_manager.has_active_listeners():
                 is_approved = approval_manager.request_approval(
                     task_id="active",
                     action_type="overwrite_file",
@@ -694,7 +695,7 @@ def list_files(path: Optional[str] = None) -> str:
         return f"Error listing files in workspace: {str(e)}"
 
 
-def connect_gmail_smtp(email_user: str, email_pass: str, timeout: int = 20) -> tuple:
+def connect_gmail_smtp(email_user: str, email_pass: str, timeout: int = 8) -> tuple:
     """
     Establishes an authenticated connection to Gmail SMTP with dual-port failover:
     - Attempt 1: Port 587 with STARTTLS (explicit TLS).
@@ -778,9 +779,10 @@ def send_email(to_email: str, subject: str, body: str) -> str:
             f"The previous step output was not provided or failed to populate before sending."
         )
 
-    # Human approval check
+    # Human approval check (only if not already gated by workflow engine)
     from backend.approvals import approval_manager
-    if approval_manager.has_active_listeners():
+    from backend.workflows import WORKFLOW_EXECUTION_CONTEXT
+    if not WORKFLOW_EXECUTION_CONTEXT.get() and approval_manager.has_active_listeners():
         is_approved = approval_manager.request_approval(
             task_id="active",
             action_type="send_email",
@@ -858,7 +860,8 @@ def send_telegram_message(message: str, chat_id: Optional[str] = None, parse_mod
     Requires explicit human approval before live sending.
     """
     from backend.approvals import approval_manager
-    if approval_manager.has_active_listeners():
+    from backend.workflows import WORKFLOW_EXECUTION_CONTEXT
+    if not WORKFLOW_EXECUTION_CONTEXT.get() and approval_manager.has_active_listeners():
         is_approved = approval_manager.request_approval(
             task_id="active",
             action_type="send_telegram_message",

@@ -253,71 +253,23 @@ export default function WorkflowGraph({
                   </div>
                 )}
 
-                {/* Pending Approval In-Step Action Card */}
-                {isWaitingApproval && (
-                  <div className="mt-3 p-4 rounded-xl bg-amber-950/70 border-2 border-amber-400 text-xs space-y-3 shadow-lg shadow-amber-500/10 animate-in fade-in duration-200">
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-2">
-                        <ShieldAlert className="w-4 h-4 text-amber-300 animate-pulse flex-shrink-0" />
-                        <span className="font-bold text-amber-200 uppercase tracking-wide text-xs">
-                          Action Paused: Human Approval Required
-                        </span>
-                      </div>
-                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-400 text-black font-extrabold uppercase tracking-widest animate-pulse">
-                        AWAITING YOU
-                      </span>
-                    </div>
-
-                    <p className="text-slate-300 text-xs">
-                      AgentFlow requires your permission before executing <code className="text-cyan-300 font-mono px-1 rounded bg-black/40">{step.tool}</code>.
-                    </p>
-
-                    {/* Preview key target */}
-                    {step.tool === 'send_email' && (
-                      <div className="p-2.5 rounded-lg bg-black/50 border border-white/10 text-xs space-y-1">
-                        <div className="flex items-center gap-2">
-                          <span className="text-slate-400 font-medium">To:</span>
-                          <span className="text-white font-mono font-bold truncate">
-                            {pendingApproval?.parameters?.to_email || pendingApproval?.parameters?.receiver || step.params?.to_email || step.params?.receiver || 'inshaf713@gmail.com'}
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <span className="text-slate-400 font-medium">Subject:</span>
-                          <span className="text-slate-200 truncate font-medium">
-                            {pendingApproval?.parameters?.subject || step.params?.subject || 'Weather Report'}
-                          </span>
-                        </div>
-                      </div>
-                    )}
-
-                    {step.tool === 'save_file' && (
-                      <div className="p-2 rounded-lg bg-black/50 border border-white/10 text-xs">
-                        <span className="text-slate-400 font-medium">Target: </span>
-                        <span className="text-cyan-300 font-mono font-bold">
-                          {pendingApproval?.parameters?.filename || step.params?.filename || 'workspace/output.txt'}
-                        </span>
-                      </div>
-                    )}
-
-                    {step.tool === 'send_telegram_message' && (
-                      <div className="p-2 rounded-lg bg-black/50 border border-white/10 text-xs">
-                        <span className="text-slate-400 font-medium">Telegram Chat: </span>
-                        <span className="text-cyan-300 font-mono font-bold">
-                          {pendingApproval?.parameters?.chat_id || step.params?.chat_id || 'Default Chat'}
-                        </span>
-                      </div>
-                    )}
-
-                    {/* Single Approval Card Rule: Informative status banner directing user to the dedicated card above */}
-                    <div className="pt-2 flex flex-wrap items-center justify-between gap-2 text-xs border-t border-amber-500/20 text-amber-200">
-                      <div className="flex items-center gap-2">
-                        <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping" />
-                        <span className="font-semibold text-amber-300">Awaiting Human Approval</span>
-                      </div>
-                      <span className="text-[11px] text-amber-200/80 bg-amber-500/10 px-2.5 py-1 rounded-lg border border-amber-500/20">
-                        Review parameters &amp; choose Approve or Reject in the card above 👆
-                      </span>
-                    </div>
+                {/* Single Approval Card Rule: In-step compact indicator pointing to the canonical card above */}
+                {isWaitingApproval && pendingApproval && (
+                  <div className="mt-2.5 pt-2 border-t border-amber-500/20 flex items-center justify-between text-xs text-amber-300">
+                    <span className="flex items-center gap-1.5 font-medium">
+                      <ShieldAlert className="w-3.5 h-3.5 text-amber-400 animate-pulse flex-shrink-0" />
+                      <span>Paused for human approval. See actionable card above.</span>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        document.getElementById('human-approval-card')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                      }}
+                      className="text-[10px] font-semibold text-amber-400 hover:text-amber-200 underline ml-2 whitespace-nowrap"
+                    >
+                      View Approval Card 👆
+                    </button>
                   </div>
                 )}
 

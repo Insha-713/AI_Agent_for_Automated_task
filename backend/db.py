@@ -687,6 +687,34 @@ async def resolve_approval_record(approval_id: str, decision: str) -> bool:
         await db.commit()
         return cursor.rowcount > 0
 
+async def cancel_pending_approvals_for_run(run_id: str) -> int:
+    """Marks any pending approvals for a run as rejected/cancelled."""
+    if not run_id:
+        return 0
+    now_str = datetime.now().isoformat()
+    async with get_db() as db:
+        cursor = await db.execute("""
+            UPDATE approvals
+            SET status = 'rejected', decision = 'reject', decision_time = ?, resolved_at = ?
+            WHERE run_id = ? AND status = 'pending'
+        """, (now_str, now_str, run_id))
+        await db.commit()
+        return cursor.rowcount
+
+async def cancel_pending_approvals_for_workflow(workflow_id: str) -> int:
+    """Marks any pending approvals for a workflow as rejected/cancelled."""
+    if not workflow_id:
+        return 0
+    now_str = datetime.now().isoformat()
+    async with get_db() as db:
+        cursor = await db.execute("""
+            UPDATE approvals
+            SET status = 'rejected', decision = 'reject', decision_time = ?, resolved_at = ?
+            WHERE (workflow_id = ? OR task_id = ?) AND status = 'pending'
+        """, (now_str, now_str, workflow_id, workflow_id))
+        await db.commit()
+        return cursor.rowcount
+
 async def get_approval_by_id(approval_id: str) -> Optional[Dict[str, Any]]:
     """Retrieves an approval record by its ID."""
     async with get_db() as db:
@@ -1038,8 +1066,8 @@ async def create_workflow_run_record(
 async def update_workflow_run_record(
     run_id: str,
     status: str,
-    step_results: Dict[str, Any],
-    step_logs: List[Dict[str, Any]],
+    step_results: Optional[Dict[str, Any]] = None,
+    step_logs: Optional[List[Dict[str, Any]]] = None,
     duration_seconds: float = 0.0,
     generated_files: Optional[List[str]] = None,
     interrupted_reason: str = ""
@@ -1047,27 +1075,38 @@ async def update_workflow_run_record(
     """Updates workflow run record with final results, step logs, generated files, and duration."""
     now_str = datetime.now().isoformat()
     files_json = json.dumps(generated_files or [])
+    results_json = json.dumps(step_results if step_results is not None else {})
+    logs_json = json.dumps(step_logs if step_logs is not None else [])
     async with get_db() as db:
-        cursor = await db.execute("""
-            UPDATE workflow_runs
-            SET status = ?,
-                step_results = ?,
-                step_logs = ?,
-                duration_seconds = ?,
-                completed_at = ?,
-                generated_files = ?,
-                interrupted_reason = ?
-            WHERE id = ?
-        """, (
-            status,
-            json.dumps(step_results),
-            json.dumps(step_logs),
-            duration_seconds,
-            now_str,
-            files_json,
-            interrupted_reason,
-            run_id
-        ))
+        if step_results is None and step_logs is None:
+            cursor = await db.execute("""
+                UPDATE workflow_runs
+                SET status = ?,
+                    completed_at = ?,
+                    interrupted_reason = ?
+                WHERE id = ?
+            """, (status, now_str, interrupted_reason, run_id))
+        else:
+            cursor = await db.execute("""
+                UPDATE workflow_runs
+                SET status = ?,
+                    step_results = ?,
+                    step_logs = ?,
+                    duration_seconds = ?,
+                    completed_at = ?,
+                    generated_files = ?,
+                    interrupted_reason = ?
+                WHERE id = ?
+            """, (
+                status,
+                results_json,
+                logs_json,
+                duration_seconds,
+                now_str,
+                files_json,
+                interrupted_reason,
+                run_id
+            ))
         await db.commit()
         return cursor.rowcount > 0
 

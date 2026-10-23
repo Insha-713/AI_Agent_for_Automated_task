@@ -7,6 +7,7 @@ Designed for Indian SMBs, colleges, and digital agencies with zero paid APIs.
 
 import os
 import time
+import uuid
 import requests
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, List, Optional
@@ -130,6 +131,7 @@ async def execute_monitor_check(monitor: Dict[str, Any]) -> Dict[str, Any]:
 
     # Persist log & update monitor record
     await record_monitor_log(
+        log_id=f"log_{uuid.uuid4().hex[:10]}",
         monitor_id=monitor_id,
         status=status,
         status_code=status_code,

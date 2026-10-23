@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   ShieldAlert, 
   Check, 
@@ -21,9 +21,18 @@ export default function ApprovalCard({ approval, onResolve, dryRun = false }) {
   const [resolvedDecision, setResolvedDecision] = useState(null);
   const [submitError, setSubmitError] = useState(null);
 
+  const apprId = approval?.approval_id || approval?.id;
+
+  // Reset local state whenever approval identity changes so buttons are always responsive
+  useEffect(() => {
+    setResolvedDecision(null);
+    setSubmitError(null);
+    setIsSubmitting(false);
+    setSubmittingAction(null);
+  }, [apprId]);
+
   if (!approval) return null;
 
-  const apprId = approval.approval_id || approval.id;
   const isEmail = approval.tool === 'send_email' || approval.action_type === 'send_email';
   const isTelegram = approval.tool === 'send_telegram_message' || approval.action_type === 'send_telegram';
   const isFileWrite = approval.tool === 'save_file' || approval.action_type === 'overwrite_file';

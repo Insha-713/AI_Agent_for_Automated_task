@@ -179,6 +179,33 @@ class ApprovalManager:
                     }
             return None
 
+    def cancel_pending_for_run(self, run_id: str):
+        """Cancels any in-memory pending approval entries associated with a run."""
+        with self._lock:
+            for aid, entry in list(self._pending.items()):
+                if entry.get("run_id") == run_id and entry.get("status") == "pending":
+                    entry["decision"] = "reject"
+                    entry["status"] = "rejected"
+                    if "event" in entry and entry["event"]:
+                        try:
+                            entry["event"].set()
+                        except Exception:
+                            pass
+
+    def cancel_pending_for_workflow(self, workflow_id: str):
+        """Cancels any in-memory pending approval entries associated with a workflow."""
+        with self._lock:
+            for aid, entry in list(self._pending.items()):
+                wf = entry.get("workflow_id") or entry.get("task_id")
+                if wf == workflow_id and entry.get("status") == "pending":
+                    entry["decision"] = "reject"
+                    entry["status"] = "rejected"
+                    if "event" in entry and entry["event"]:
+                        try:
+                            entry["event"].set()
+                        except Exception:
+                            pass
+
     def get_all_pending(self) -> List[Dict[str, Any]]:
         """Returns all currently pending approvals."""
         results = []

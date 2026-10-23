@@ -424,6 +424,9 @@ export default function WorkflowsPage({ onOpenIntegrations = () => {} }) {
           if (data.step_id) {
             setActiveStepId(data.step_id);
           }
+        } else {
+          // If no pending approval on server, clear any stale state
+          setPendingApproval(null);
         }
       })
       .catch(() => {});
@@ -585,17 +588,10 @@ export default function WorkflowsPage({ onOpenIntegrations = () => {} }) {
     }
   };
 
-  const handleRunWorkflow = () => {
-    if (!currentPlan || !currentPlan.workflow_id) return;
-
-    setIsRunning(true);
-    setPendingApproval(null);
-    setErrorMsg('');
-    setLogs([]);
-    setRunResult(null);
-
-    const runParam = activeRunId ? `&run_id=${encodeURIComponent(activeRunId)}` : '';
-    const streamUrl = getApiUrl(`/api/workflows/${currentPlan.workflow_id}/stream?dry_run=${dryRun ? 'true' : 'false'}${runParam}`);
+  const connectEventSource = (streamUrl) => {
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+    }
     const es = new EventSource(streamUrl);
     eventSourceRef.current = es;
 
@@ -673,6 +669,17 @@ export default function WorkflowsPage({ onOpenIntegrations = () => {} }) {
           }, 100);
         } else if (data.type === 'approval_resolved') {
           setPendingApproval(null);
+          if (data.decision === 'approve') {
+            setCurrentPlan((prev) => {
+              if (!prev) return prev;
+              return {
+                ...prev,
+                status: 'running',
+                steps: prev.steps.map((s) => (s.id === data.step_id ? { ...s, status: 'running' } : s))
+              };
+            });
+            setActiveStepId(data.step_id);
+          }
           setLogs((prev) => [
             ...prev,
             `[${timestamp}] ⚖️ Human Approval decision: ${data.decision.toUpperCase()}`
@@ -731,16 +738,71 @@ export default function WorkflowsPage({ onOpenIntegrations = () => {} }) {
       }
       es.close();
     };
+    return es;
+  };
+
+  const handleRunWorkflow = () => {
+    if (!currentPlan || !currentPlan.workflow_id) return;
+
+    setIsRunning(true);
+    setPendingApproval(null);
+    setErrorMsg('');
+    setLogs([]);
+    setRunResult(null);
+
+    const runParam = activeRunId ? `&run_id=${encodeURIComponent(activeRunId)}` : '';
+    const streamUrl = getApiUrl(`/api/workflows/${currentPlan.workflow_id}/stream?dry_run=${dryRun ? 'true' : 'false'}${runParam}`);
+    connectEventSource(streamUrl);
   };
 
   const handleCancelWorkflow = async () => {
     if (!currentPlan) return;
-    try {
-      await fetch(getApiUrl(`/api/workflows/${currentPlan.workflow_id}/cancel`), { method: 'POST' });
-      setLogs((prev) => [...prev, `[${new Date().toLocaleTimeString()}] Requesting cancellation...`]);
-    } catch (e) {
-      console.warn('Failed to cancel workflow:', e);
+    const wfId = currentPlan.workflow_id;
+    const runId = activeRunId;
+    const timestamp = new Date().toLocaleTimeString();
+
+    // 1. Immediately abort active SSE stream
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+      eventSourceRef.current = null;
     }
+
+    // 2. Immediately update UI state for zero-latency cancellation
+    setIsRunning(false);
+    setPendingApproval(null);
+    setActiveStepId(null);
+    setCurrentPlan((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        status: 'cancelled',
+        steps: (prev.steps || []).map((s) => (s.status === 'running' || s.status === 'waiting_approval' ? { ...s, status: 'cancelled' } : s))
+      };
+    });
+    setRunResult({
+      status: 'cancelled',
+      duration_seconds: 0,
+      summary: 'Workflow execution was cancelled by user.',
+      step_outputs: [],
+      generated_files: [],
+      timestamp: new Date().toISOString()
+    });
+    setLogs((prev) => [...prev, `[${timestamp}] 🛑 Workflow execution was cancelled by user.`]);
+
+    // 3. Notify backend of cancellation
+    try {
+      const cancelPromises = [
+        fetch(getApiUrl(`/api/workflows/${wfId}/cancel`), { method: 'POST' })
+      ];
+      if (runId) {
+        cancelPromises.push(fetch(getApiUrl(`/api/runs/${runId}/cancel`), { method: 'POST' }));
+      }
+      await Promise.allSettled(cancelPromises);
+    } catch (e) {
+      console.warn('Failed to cancel workflow on backend:', e);
+    }
+
+    fetchWorkflows();
   };
 
   const handleSaveAsMyTemplate = async () => {
@@ -812,6 +874,7 @@ export default function WorkflowsPage({ onOpenIntegrations = () => {} }) {
     const approvalIdToUse = apprId || pendingApproval?.approval_id || pendingApproval?.id;
     if (!approvalIdToUse) return;
 
+    const pendingStepId = pendingApproval?.step_id || activeStepId;
     setIsResolvingApproval(true);
     const timestamp = new Date().toLocaleTimeString();
 
@@ -835,12 +898,55 @@ export default function WorkflowsPage({ onOpenIntegrations = () => {} }) {
         }
       }
 
-      // Hide approval card immediately once decision is recorded (Requirement 1)
-      setPendingApproval(null);
+      if (decision === 'approve') {
+        // Transition step in currentPlan to 'running'
+        if (currentPlan && pendingStepId) {
+          setCurrentPlan((prev) => {
+            if (!prev) return prev;
+            return {
+              ...prev,
+              status: 'running',
+              steps: (prev.steps || []).map((s) => (s.id === pendingStepId ? { ...s, status: 'running' } : s))
+            };
+          });
+        }
+        setIsRunning(true);
+        if (pendingStepId) setActiveStepId(pendingStepId);
 
-      if (decision === 'reject') {
+        // Hide approval card immediately once decision is recorded
+        setPendingApproval(null);
+
+        // Verify SSE connection is active; if dropped or closed while awaiting user, reconnect immediately!
+        if (!eventSourceRef.current || eventSourceRef.current.readyState === EventSource.CLOSED) {
+          if (currentPlan && currentPlan.workflow_id) {
+            const runParam = activeRunId ? `&run_id=${encodeURIComponent(activeRunId)}` : '';
+            const streamUrl = getApiUrl(`/api/workflows/${currentPlan.workflow_id}/stream?dry_run=${dryRun ? 'true' : 'false'}${runParam}`);
+            connectEventSource(streamUrl);
+          }
+        }
+      } else {
+        // Reject / Cancel action
+        if (eventSourceRef.current) {
+          eventSourceRef.current.close();
+          eventSourceRef.current = null;
+        }
+        setPendingApproval(null);
         setIsRunning(false);
         setActiveStepId(null);
+        if (currentPlan) {
+          setCurrentPlan((prev) => {
+            if (!prev) return prev;
+            return {
+              ...prev,
+              status: 'cancelled',
+              steps: (prev.steps || []).map((s) => {
+                if (s.id === pendingStepId) return { ...s, status: 'rejected' };
+                if (s.status === 'waiting_approval' || s.status === 'pending') return { ...s, status: 'skipped' };
+                return s;
+              })
+            };
+          });
+        }
         setRunResult({
           status: 'cancelled',
           duration_seconds: 0,
