@@ -223,12 +223,28 @@ AgentFlow solves this with **Dual-Mode Persistent Storage**:
 | `GEMINI_API_KEY` | If using Gemini| Free API Key from [aistudio.google.com](https://aistudio.google.com) | *(Your Gemini API key)* |
 | `DATABASE_URL` | **Yes (for history)** | External PostgreSQL connection URL | `postgresql://user:pass@ep-xyz.neon.tech/neondb?sslmode=require` |
 | `ALLOWED_ORIGINS` | **Yes (for CORS)** | Vercel domain allowing cross-origin requests | `https://ai-agent-for-automated-task.vercel.app` |
-| `LLM_MODEL` | Optional | Custom model name | `llama-3.3-70b-versatile` or `gemini-1.5-flash` |
-| `WORKSPACE_DIR` | Optional | Sandboxed file directory | `workspace` |
-| `EMAIL_USER` | Optional | Gmail address for sending emails | `your-email@gmail.com` |
-| `EMAIL_PASS` | Optional | 16-char Google App Password | `abcd efgh ijkl mnop` |
+| `EMAIL_PROVIDER` | **Recommended on Render** | Email provider: `brevo` or `resend` (Render free tier blocks SMTP) | `brevo` |
+| `BREVO_API_KEY` | If using Brevo | API key from [app.brevo.com](https://app.brevo.com/settings/keys/api) | `xkeysib-...` |
+| `EMAIL_FROM` | If using Brevo/Resend | Sender address (verified in Brevo or `onboarding@resend.dev`) | `your-email@gmail.com` |
+| `RESEND_API_KEY` | If using Resend | API key from [resend.com/api-keys](https://resend.com/api-keys) | `re_...` |
+| `EMAIL_USER` | Local use | Gmail address for local SMTP | `your-email@gmail.com` |
+| `EMAIL_PASS` | Local use | 16-char Google App Password | `abcd efgh ijkl mnop` |
 | `TELEGRAM_BOT_TOKEN` | Optional | Bot token from @BotFather | `123456789:ABCDefgh...` |
 | `TELEGRAM_CHAT_ID` | Optional | Your Telegram chat ID | `987654321` |
+
+#### Why SMTP Times Out on Render & How to Configure Brevo / Resend:
+Render free web services block outbound SMTP ports 25, 465, and 587. Attempting to connect via Gmail SMTP will fail or time out after 5 seconds with:
+`"SMTP is blocked on this host (for example Render free plan). Set EMAIL_PROVIDER=brevo or resend and an API key."`
+
+To enable live email delivery on Render:
+1. **Brevo (Recommended, 300 free emails/day)**:
+   - Create a free account at [brevo.com](https://www.brevo.com/).
+   - Go to **SMTP & API** -> **API Keys** -> Generate a key.
+   - On Render, add `EMAIL_PROVIDER=brevo`, `BREVO_API_KEY=xkeysib-...`, and `EMAIL_FROM=your-verified-email@domain.com`.
+2. **Resend (100 free emails/day)**:
+   - Create a free account at [resend.com](https://resend.com/).
+   - Go to **API Keys** -> Create API Key.
+   - On Render, add `EMAIL_PROVIDER=resend`, `RESEND_API_KEY=re_...`, and `EMAIL_FROM=onboarding@resend.dev` (or your verified domain).
 
 #### Variables to Add on Vercel (Frontend Deployment):
 | Variable | Required | Description | Value |

@@ -695,7 +695,7 @@ def list_files(path: Optional[str] = None) -> str:
         return f"Error listing files in workspace: {str(e)}"
 
 
-def connect_gmail_smtp(email_user: str, email_pass: str, timeout: int = 8) -> tuple:
+def connect_gmail_smtp(email_user: str, email_pass: str, timeout: int = 5) -> tuple:
     """
     Establishes an authenticated connection to Gmail SMTP with dual-port failover:
     - Attempt 1: Port 587 with STARTTLS (explicit TLS).
@@ -751,8 +751,7 @@ def connect_gmail_smtp(email_user: str, email_pass: str, timeout: int = 8) -> tu
     except Exception as e:
         raise smtplib.SMTPConnectError(
             -1,
-            f"Connection blocked or timed out when contacting smtp.gmail.com on port 587 ({port_587_error or 'Connection closed'}) "
-            f"and port 465 ({str(e)}). Please check your internet connection, firewall, VPN, or antivirus settings."
+            "SMTP is blocked on this host (for example Render free plan). Set EMAIL_PROVIDER=brevo or resend and an API key."
         )
 
 
@@ -793,62 +792,8 @@ def send_email(to_email: str, subject: str, body: str) -> str:
         if not is_approved:
             return f"[ACTION REJECTED BY USER] Sending email to '{clean_to}' was rejected by user. Email not sent."
 
-    # Read and sanitize credentials from persistent store (os.environ, SQLite, .env)
-    email_user = (get_credential("EMAIL_USER") or get_credential("GMAIL_EMAIL") or "").strip().strip("'\"")
-    email_pass = (get_credential("EMAIL_PASS") or get_credential("GMAIL_APP_PASSWORD") or "").strip().strip("'\"").replace(" ", "")
-
-    if not email_user or not email_pass:
-        return (
-            f"[SIMULATION MODE - EMAIL NOT SENT (APPROVED)]\n"
-            f"Notice: EMAIL_USER / EMAIL_PASS not configured in server settings.\n"
-            f"To: {clean_to}\n"
-            f"Subject: {subject}\n"
-            f"Body preview:\n{body[:300]}..."
-        )
-
-    try:
-        msg = MIMEMultipart()
-        msg["From"] = email_user
-        msg["To"] = clean_to
-        msg["Subject"] = subject
-        msg.attach(MIMEText(body, "plain", "utf-8"))
-
-        server, port_used = connect_gmail_smtp(email_user, email_pass, timeout=20)
-        try:
-            server.send_message(msg)
-        finally:
-            try:
-                server.quit()
-            except Exception:
-                pass
-
-        return f"Email successfully sent to '{clean_to}' with subject '{subject}' (via Gmail SMTP port {port_used})."
-
-    except smtplib.SMTPAuthenticationError as auth_err:
-        return (
-            f"Failed to send email to '{clean_to}': Authentication failed for '{email_user}'. "
-            f"Invalid Google App Password. Please generate a 16-character App Password at "
-            f"https://myaccount.google.com/apppasswords and update your server settings."
-        )
-    except smtplib.SMTPRecipientsRefused as recip_err:
-        return (
-            f"Failed to send email to '{clean_to}': Recipient rejected. "
-            f"Gmail SMTP rejected destination address '{clean_to}'. Please verify the recipient address."
-        )
-    except (smtplib.SMTPServerDisconnected, smtplib.SMTPConnectError, socket.timeout, TimeoutError, ConnectionRefusedError, OSError) as conn_err:
-        err_msg = str(conn_err)
-        if "101" in err_msg or "unreachable" in err_msg.lower():
-            return (
-                f"Notice: Outbound SMTP connection blocked by server environment ({err_msg}). "
-                f"Cloud hosting providers like Render restrict direct outbound SMTP ports 587/465 on free tiers. "
-                f"To dispatch live emails, run AgentFlow locally on your computer where Gmail SMTP connects directly."
-            )
-        return (
-            f"Failed to send email to '{clean_to}': Connection blocked or timed out on ports 587 and 465. "
-            f"Please check your internet connection, firewall, VPN, or antivirus settings."
-        )
-    except Exception as e:
-        return f"Failed to send email to '{clean_to}': {str(e)}"
+    from backend.email_provider import send_email_via_provider
+    return send_email_via_provider(clean_to, subject, body)
 
 
 @tool

@@ -38,6 +38,7 @@ import {
   Edit2,
   Trash2
 } from 'lucide-react';
+import { getApiUrl } from '../api/config';
 
 const DEFAULT_SERVICES = [
   {
@@ -281,22 +282,32 @@ export default function SettingsPage({ onNavigate = () => {} }) {
   const [integrations, setIntegrations] = useState(DEFAULT_SERVICES);
   const [testingService, setTestingService] = useState(null);
   const [integrationStatuses, setIntegrationStatuses] = useState({});
+  const [isInitialLoading, setIsInitialLoading] = useState(true);
+  const [isServerWakingUp, setIsServerWakingUp] = useState(false);
+  const [emailTesting, setEmailTesting] = useState(false);
+  const [emailTestResult, setEmailTestResult] = useState(null);
   const [secrets, setSecrets] = useState({
+    email_provider: 'smtp',
     email_user: '',
     email_pass: '',
+    brevo_api_key: '',
+    resend_api_key: '',
+    email_from: '',
     telegram_token: '',
     telegram_chat_id: ''
   });
   const [showSecrets, setShowSecrets] = useState({
     email_pass: false,
-    telegram_token: false
+    telegram_token: false,
+    brevo_key: false,
+    resend_key: false
   });
   const [savedIndicators, setSavedIndicators] = useState({
     email: false,
     telegram: false
   });
   const [credentialsSummary, setCredentialsSummary] = useState({
-    email: { configured: false, email_user: '', has_password: false, masked_password: '' },
+    email: { configured: false, provider: 'smtp', email_user: '', has_password: false, masked_password: '' },
     telegram: { configured: false, has_token: false, masked_token: '', chat_id: '' }
   });
   const [isEditingEmail, setIsEditingEmail] = useState(false);
@@ -318,7 +329,7 @@ export default function SettingsPage({ onNavigate = () => {} }) {
 
   const fetchTemplates = async () => {
     try {
-      const tResp = await fetch('/api/templates');
+      const tResp = await fetch(getApiUrl('/api/templates'));
       if (tResp.ok) {
         const tData = await tResp.json();
         const list = Array.isArray(tData) ? tData : (tData?.templates || []);
@@ -332,7 +343,7 @@ export default function SettingsPage({ onNavigate = () => {} }) {
     }
 
     try {
-      const fallbackResp = await fetch('/api/workflows/templates');
+      const fallbackResp = await fetch(getApiUrl('/api/workflows/templates'));
       if (fallbackResp.ok) {
         const fallbackData = await fallbackResp.json();
         const list = Array.isArray(fallbackData) ? fallbackData : (fallbackData?.templates || []);
@@ -358,9 +369,35 @@ export default function SettingsPage({ onNavigate = () => {} }) {
   }, [activeTab]);
 
   const fetchInitialData = async () => {
-    // 1. Fetch user settings
+    setIsInitialLoading(true);
+    setIsServerWakingUp(false);
+
+    // 1. Probe server health with retry to detect sleeping Render instance
+    let attempts = 0;
+    while (attempts < 4) {
+      attempts++;
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 5000);
+        const hResp = await fetch(getApiUrl('/api/health'), { signal: controller.signal });
+        clearTimeout(timer);
+        if (hResp.ok) {
+          setIsServerWakingUp(false);
+          break;
+        } else if (hResp.status >= 500) {
+          setIsServerWakingUp(true);
+        }
+      } catch (e) {
+        setIsServerWakingUp(true);
+      }
+      if (attempts < 4) {
+        await new Promise(r => setTimeout(r, 2000));
+      }
+    }
+
+    // 2. Fetch user settings
     try {
-      const sResp = await fetch('/api/settings');
+      const sResp = await fetch(getApiUrl('/api/settings'));
       if (sResp.ok) {
         const sData = await sResp.json();
         setSettings(prev => ({ ...prev, ...(sData.settings || {}) }));
@@ -369,21 +406,27 @@ export default function SettingsPage({ onNavigate = () => {} }) {
       console.warn('Settings fetch error:', e);
     }
 
-    // 2. Fetch credentials summary (masked)
+    // 3. Fetch credentials summary (masked)
     try {
-      const cResp = await fetch('/api/integrations/credentials');
+      const cResp = await fetch(getApiUrl('/api/integrations/credentials'));
       if (cResp.ok) {
         const cData = await cResp.json();
         setCredentialsSummary(cData);
+        const prov = cData.email?.provider || 'smtp';
+        setSecrets(prev => ({
+          ...prev,
+          email_provider: prov,
+          email_user: cData.email?.email_user || prev.email_user,
+          email_from: cData.email?.email_from || prev.email_from,
+          telegram_chat_id: cData.telegram?.chat_id || prev.telegram_chat_id
+        }));
         if (cData.email?.configured) {
-          setSecrets(prev => ({ ...prev, email_user: cData.email.email_user || '' }));
           setSavedIndicators(prev => ({ ...prev, email: true }));
           setIsEditingEmail(false);
         } else {
           setIsEditingEmail(true);
         }
         if (cData.telegram?.configured) {
-          setSecrets(prev => ({ ...prev, telegram_chat_id: cData.telegram.chat_id || '' }));
           setSavedIndicators(prev => ({ ...prev, telegram: true }));
           setIsEditingTelegram(false);
         } else {
@@ -394,9 +437,9 @@ export default function SettingsPage({ onNavigate = () => {} }) {
       console.warn('Credentials summary fetch error:', e);
     }
 
-    // 3. Fetch integrations status
+    // 4. Fetch integrations status
     try {
-      const iResp = await fetch('/api/integrations/status');
+      const iResp = await fetch(getApiUrl('/api/integrations/status'));
       if (iResp.ok) {
         const iData = await iResp.json();
         setIntegrations(iData.services || []);
@@ -408,13 +451,15 @@ export default function SettingsPage({ onNavigate = () => {} }) {
       }
     } catch (e) {
       console.warn('Integrations status fetch error:', e);
+    } finally {
+      setIsInitialLoading(false);
     }
   };
 
   const handleTestIntegration = async (serviceName) => {
     setTestingService(serviceName);
     try {
-      const resp = await fetch(`/api/integrations/test/${serviceName}`, { method: 'POST' });
+      const resp = await fetch(getApiUrl(`/api/integrations/test/${serviceName}`), { method: 'POST' });
       const data = await resp.json();
       setIntegrationStatuses(prev => ({ ...prev, [serviceName]: data }));
     } catch (e) {
@@ -424,28 +469,46 @@ export default function SettingsPage({ onNavigate = () => {} }) {
     }
   };
 
+  const handleTestEmailConnection = async () => {
+    setEmailTesting(true);
+    setEmailTestResult(null);
+    try {
+      const resp = await fetch(getApiUrl('/api/integrations/email/test'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider: secrets.email_provider })
+      });
+      const data = await resp.json();
+      setEmailTestResult(data);
+    } catch (e) {
+      setEmailTestResult({ success: false, message: e.message || 'Failed to reach server' });
+    } finally {
+      setEmailTesting(false);
+    }
+  };
+
   const handleSaveEmailIntegration = async (e) => {
     if (e) e.preventDefault();
-    if (!secrets.email_user || !secrets.email_user.includes('@')) {
-      setToast({ type: 'error', text: 'Please enter a valid Gmail address (e.g. user@gmail.com).' });
-      return;
-    }
     setIsSavingEmail(true);
     try {
-      const resp = await fetch('/api/integrations/credentials/email', {
+      const resp = await fetch(getApiUrl('/api/integrations/credentials/email'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          email_user: secrets.email_user,
-          email_pass: secrets.email_pass || undefined
+          provider: secrets.email_provider,
+          email_user: secrets.email_user || undefined,
+          email_pass: secrets.email_pass || undefined,
+          brevo_api_key: secrets.brevo_api_key || undefined,
+          resend_api_key: secrets.resend_api_key || undefined,
+          email_from: secrets.email_from || undefined
         })
       });
       const data = await resp.json();
       if (resp.ok) {
-        setToast({ type: 'success', text: 'Email integration configured and saved persistently!' });
+        setToast({ type: 'success', text: `Email integration (${secrets.email_provider.toUpperCase()}) saved persistently!` });
         setSavedIndicators(prev => ({ ...prev, email: true }));
         setIsEditingEmail(false);
-        setSecrets(prev => ({ ...prev, email_pass: '' }));
+        setSecrets(prev => ({ ...prev, email_pass: '', brevo_api_key: '', resend_api_key: '' }));
         await fetchInitialData();
       } else {
         setToast({ type: 'error', text: data.detail || 'Failed to save email credentials.' });
@@ -458,12 +521,12 @@ export default function SettingsPage({ onNavigate = () => {} }) {
   };
 
   const handleDisconnectEmail = async () => {
-    if (!window.confirm('Are you sure you want to disconnect your Gmail integration?')) return;
+    if (!window.confirm('Are you sure you want to disconnect your email integration?')) return;
     try {
-      const resp = await fetch('/api/integrations/credentials/email', { method: 'DELETE' });
+      const resp = await fetch(getApiUrl('/api/integrations/credentials/email'), { method: 'DELETE' });
       if (resp.ok) {
         setToast({ type: 'success', text: 'Email integration credentials removed.' });
-        setSecrets(prev => ({ ...prev, email_user: '', email_pass: '' }));
+        setSecrets(prev => ({ ...prev, email_user: '', email_pass: '', brevo_api_key: '', resend_api_key: '', email_from: '' }));
         setSavedIndicators(prev => ({ ...prev, email: false }));
         setIsEditingEmail(true);
         await fetchInitialData();
@@ -477,7 +540,7 @@ export default function SettingsPage({ onNavigate = () => {} }) {
     if (e) e.preventDefault();
     setIsSavingTelegram(true);
     try {
-      const resp = await fetch('/api/integrations/credentials/telegram', {
+      const resp = await fetch(getApiUrl('/api/integrations/credentials/telegram'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -624,7 +687,7 @@ export default function SettingsPage({ onNavigate = () => {} }) {
     setToast(null);
 
     try {
-      const resp = await fetch('/api/settings', {
+      const resp = await fetch(getApiUrl('/api/settings'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ settings })
@@ -788,12 +851,33 @@ export default function SettingsPage({ onNavigate = () => {} }) {
 
       {/* TAB 1: INTEGRATIONS HUB */}
       {activeTab === 'integrations' && (
+        isInitialLoading ? (
+          <div className="glass-panel p-8 sm:p-12 rounded-2xl border border-white/10 text-center space-y-4">
+            <div className="w-12 h-12 rounded-2xl bg-cyan-500/10 border border-cyan-500/20 text-cyan-400 flex items-center justify-center mx-auto">
+              <RefreshCw className="w-6 h-6 animate-spin" />
+            </div>
+            <div>
+              <h3 className="text-base font-semibold text-white">
+                {isServerWakingUp ? "The server is waking up (this can take up to a minute on the free plan)" : "Checking server status..."}
+              </h3>
+              <p className="text-xs text-slate-400 mt-1 max-w-md mx-auto">
+                {isServerWakingUp
+                  ? "Render free services sleep after inactivity. Polling backend instance until ready..."
+                  : "Retrieving active service connections, database readiness, and integration credentials..."}
+              </p>
+            </div>
+            <div className="max-w-md mx-auto grid grid-cols-2 gap-3 pt-4">
+              <div className="h-16 rounded-xl bg-white/5 animate-pulse" />
+              <div className="h-16 rounded-xl bg-white/5 animate-pulse" />
+            </div>
+          </div>
+        ) : (
         <div className="space-y-6">
           <div className="flex items-center justify-between">
             <span className="text-xs font-semibold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
               <Plug className="w-3.5 h-3.5 text-cyan-400" /> Active Service Connections
             </span>
-            <span className="text-xs text-slate-500">100% Free • Secrets Stored Locally</span>
+            <span className="text-xs text-slate-500">100% Free • Secrets Stored Locally &amp; DB</span>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
@@ -834,144 +918,301 @@ export default function SettingsPage({ onNavigate = () => {} }) {
                       </div>
                     )}
 
-                    {/* Email Credentials & App Password */}
+                    {/* Email Credentials, Multi-Provider & Test Connection */}
                     {svc.service === 'email' && (
                       <div className="pt-2 border-t border-white/5 space-y-3">
+                        {/* Test Email Connection Result Display */}
+                        {emailTestResult && (
+                          <div className={`p-2.5 rounded-xl text-xs font-mono border ${
+                            emailTestResult.success ? 'bg-emerald-950/40 border-emerald-500/30 text-emerald-300' : 'bg-rose-950/40 border-rose-500/30 text-rose-300'
+                          }`}>
+                            <div className="font-semibold flex items-center gap-1.5">
+                              {emailTestResult.success ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" /> : <AlertTriangle className="w-3.5 h-3.5 text-rose-400" />}
+                              <span>Provider: {emailTestResult.provider?.toUpperCase()}</span>
+                            </div>
+                            <p className="mt-1 text-[11px] leading-relaxed break-words">{emailTestResult.message}</p>
+                          </div>
+                        )}
+
                         {credentialsSummary?.email?.configured && !isEditingEmail ? (
                           /* Configured State View */
                           <div className="p-3 rounded-xl bg-emerald-950/30 border border-emerald-500/20 space-y-2.5">
                             <div className="flex items-center justify-between">
                               <span className="flex items-center gap-1.5 text-xs font-semibold text-emerald-300">
                                 <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                                <span>Email integration configured</span>
+                                <span>Email active ({credentialsSummary?.email?.provider?.toUpperCase() || 'SMTP'})</span>
                               </span>
                               <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-mono">
-                                {credentialsSummary?.email?.source === 'environment' ? 'ENV' : 'PERSISTENT'}
+                                ACTIVE
                               </span>
                             </div>
 
                             <div className="space-y-1 text-xs font-mono">
-                              <div className="flex items-center justify-between text-slate-300">
-                                <span className="text-slate-400">Account:</span>
-                                <span className="font-semibold text-slate-100">{credentialsSummary?.email?.email_user || secrets.email_user}</span>
-                              </div>
-                              <div className="flex items-center justify-between text-slate-300">
-                                <span className="text-slate-400">App Password:</span>
-                                <span className="tracking-widest text-emerald-400">••••••••••••••••</span>
-                              </div>
+                              {credentialsSummary?.email?.provider === 'brevo' ? (
+                                <>
+                                  <div className="flex items-center justify-between text-slate-300">
+                                    <span className="text-slate-400">Mode:</span>
+                                    <span className="text-cyan-300 font-semibold">Brevo HTTPS (Port 443)</span>
+                                  </div>
+                                  <div className="flex items-center justify-between text-slate-300">
+                                    <span className="text-slate-400">API Key:</span>
+                                    <span className="tracking-widest text-emerald-400">{credentialsSummary?.email?.masked_brevo_key || '••••••••'}</span>
+                                  </div>
+                                </>
+                              ) : credentialsSummary?.email?.provider === 'resend' ? (
+                                <>
+                                  <div className="flex items-center justify-between text-slate-300">
+                                    <span className="text-slate-400">Mode:</span>
+                                    <span className="text-cyan-300 font-semibold">Resend HTTPS (Port 443)</span>
+                                  </div>
+                                  <div className="flex items-center justify-between text-slate-300">
+                                    <span className="text-slate-400">API Key:</span>
+                                    <span className="tracking-widest text-emerald-400">{credentialsSummary?.email?.masked_resend_key || '••••••••'}</span>
+                                  </div>
+                                </>
+                              ) : (
+                                <>
+                                  <div className="flex items-center justify-between text-slate-300">
+                                    <span className="text-slate-400">Account:</span>
+                                    <span className="font-semibold text-slate-100">{credentialsSummary?.email?.email_user || secrets.email_user}</span>
+                                  </div>
+                                  <div className="flex items-center justify-between text-slate-300">
+                                    <span className="text-slate-400">App Password:</span>
+                                    <span className="tracking-widest text-emerald-400">••••••••••••••••</span>
+                                  </div>
+                                </>
+                              )}
                             </div>
 
-                            <div className="pt-2 border-t border-white/5 flex items-center justify-between gap-2">
+                            <div className="pt-2 border-t border-white/5 flex flex-wrap items-center justify-between gap-2">
+                              <div className="flex items-center gap-1.5">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setIsEditingEmail(true);
+                                    setSecrets(prev => ({
+                                      ...prev,
+                                      email_provider: credentialsSummary?.email?.provider || 'smtp',
+                                      email_user: credentialsSummary?.email?.email_user || prev.email_user,
+                                      email_pass: '',
+                                      brevo_api_key: '',
+                                      resend_api_key: ''
+                                    }));
+                                  }}
+                                  className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-white/5 hover:bg-white/10 text-slate-300 border border-white/10 text-xs font-medium transition-colors"
+                                >
+                                  <Edit2 className="w-3 h-3 text-cyan-400" />
+                                  <span>Edit</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={handleDisconnectEmail}
+                                  className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/20 text-xs font-medium transition-colors"
+                                >
+                                  <Trash2 className="w-3 h-3 text-rose-400" />
+                                  <span>Disconnect</span>
+                                </button>
+                              </div>
+
                               <button
                                 type="button"
-                                onClick={() => {
-                                  setIsEditingEmail(true);
-                                  setSecrets(prev => ({ ...prev, email_user: credentialsSummary?.email?.email_user || prev.email_user, email_pass: '' }));
-                                }}
-                                className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-white/5 hover:bg-white/10 text-slate-300 border border-white/10 text-xs font-medium transition-colors"
+                                disabled={emailTesting}
+                                onClick={handleTestEmailConnection}
+                                className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-sky-500/10 hover:bg-sky-500/20 text-sky-300 border border-sky-500/30 text-xs font-medium transition-colors disabled:opacity-50"
                               >
-                                <Edit2 className="w-3 h-3 text-cyan-400" />
-                                <span>Edit / Update</span>
-                              </button>
-                              <button
-                                type="button"
-                                onClick={handleDisconnectEmail}
-                                className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/20 text-xs font-medium transition-colors"
-                              >
-                                <Trash2 className="w-3 h-3 text-rose-400" />
-                                <span>Disconnect</span>
+                                {emailTesting ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Plug className="w-3 h-3" />}
+                                <span>Test Connection</span>
                               </button>
                             </div>
                           </div>
                         ) : (
                           /* Edit / Setup Form */
-                          <div className="space-y-2.5">
+                          <div className="space-y-3">
                             <div className="flex items-center justify-between text-[11px]">
                               <span className="font-semibold text-slate-300 flex items-center gap-1">
                                 <Lock className="w-3 h-3 text-cyan-400" />
-                                <span>Configure Gmail Integration</span>
+                                <span>Configure Email Provider</span>
                               </span>
-                              <a 
-                                href="https://myaccount.google.com/apppasswords" 
-                                target="_blank" 
-                                rel="noopener noreferrer"
-                                className="text-cyan-400 hover:text-cyan-300 flex items-center gap-0.5 text-[10px]"
-                              >
-                                <span>Google App Passwords</span>
-                                <ExternalLink className="w-2.5 h-2.5" />
-                              </a>
+                              <span className="text-[10px] text-slate-400 font-mono">Render Cloud Ready</span>
                             </div>
 
-                            <div>
-                              <label className="block text-[10px] text-slate-400 mb-1">Gmail Address</label>
-                              <input
-                                type="email"
-                                placeholder="your.email@gmail.com"
-                                value={secrets.email_user}
-                                onChange={(e) => setSecrets({ ...secrets, email_user: e.target.value })}
-                                className="w-full bg-slate-950/60 text-slate-100 placeholder:text-slate-500 text-xs p-2 rounded-lg border border-white/10 outline-none focus:border-cyan-500 font-mono"
-                              />
-                            </div>
-
-                            <div>
-                              <div className="flex items-center justify-between mb-1">
-                                <label className="block text-[10px] text-slate-400">16-character Google App Password</label>
-                                <span className={`text-[10px] font-mono ${(secrets.email_pass || '').replace(/\s+/g, '').length === 16 ? 'text-emerald-400' : 'text-slate-500'}`}>
-                                  {(secrets.email_pass || '').replace(/\s+/g, '').length === 16 ? '✓ 16 chars' : `${(secrets.email_pass || '').replace(/\s+/g, '').length}/16`}
-                                </span>
-                              </div>
-                              <div className="relative">
-                                <input
-                                  type={showSecrets.email_pass ? 'text' : 'password'}
-                                  placeholder="abcd efgh ijkl mnop"
-                                  value={secrets.email_pass}
-                                  onChange={(e) => setSecrets({ ...secrets, email_pass: e.target.value })}
-                                  className="w-full bg-slate-950/60 text-slate-100 placeholder:text-slate-500 text-xs p-2 pr-8 rounded-lg border border-white/10 outline-none focus:border-cyan-500 font-mono"
-                                />
-                                <button
-                                  type="button"
-                                  onClick={() => setShowSecrets({ ...showSecrets, email_pass: !showSecrets.email_pass })}
-                                  className="absolute right-2 top-2 text-slate-400 hover:text-white"
-                                  title={showSecrets.email_pass ? "Hide secret" : "Show secret"}
-                                >
-                                  {showSecrets.email_pass ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                                </button>
-                              </div>
-                              <p className="text-[10px] text-slate-500 mt-1">Requires 2-Step Verification enabled on your Google account.</p>
-                            </div>
-
-                            <div className="flex items-center justify-between pt-1">
-                              {credentialsSummary?.email?.configured ? (
-                                <button
-                                  type="button"
-                                  onClick={() => setIsEditingEmail(false)}
-                                  className="px-2.5 py-1 rounded-md bg-white/5 hover:bg-white/10 text-slate-400 text-xs transition-colors"
-                                >
-                                  Cancel
-                                </button>
-                              ) : (
-                                <span className="text-[10px] text-slate-500 font-mono">
-                                  Saved in SQLite &amp; env
-                                </span>
-                              )}
+                            {/* Provider Switcher */}
+                            <div className="grid grid-cols-3 gap-1 p-1 rounded-lg bg-black/40 border border-white/10 text-[10px]">
                               <button
                                 type="button"
-                                disabled={isSavingEmail}
-                                onClick={() => handleSaveSecret('email')}
-                                className="px-3 py-1.5 rounded-md bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-semibold text-xs shadow-md transition-colors flex items-center gap-1.5"
+                                onClick={() => setSecrets(prev => ({ ...prev, email_provider: 'smtp' }))}
+                                className={`py-1 rounded font-semibold transition-all ${
+                                  secrets.email_provider === 'smtp' ? 'bg-cyan-500 text-slate-950 shadow' : 'text-slate-400 hover:text-white'
+                                }`}
                               >
-                                {isSavingEmail ? (
-                                  <>
-                                    <RefreshCw className="w-3 h-3 animate-spin" />
-                                    <span>Saving...</span>
-                                  </>
-                                ) : (
-                                  <>
-                                    <Save className="w-3 h-3" />
-                                    <span>Save Integration</span>
-                                  </>
-                                )}
+                                Gmail SMTP
                               </button>
+                              <button
+                                type="button"
+                                onClick={() => setSecrets(prev => ({ ...prev, email_provider: 'brevo' }))}
+                                className={`py-1 rounded font-semibold transition-all ${
+                                  secrets.email_provider === 'brevo' ? 'bg-cyan-500 text-slate-950 shadow' : 'text-slate-400 hover:text-white'
+                                }`}
+                              >
+                                Brevo (API)
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setSecrets(prev => ({ ...prev, email_provider: 'resend' }))}
+                                className={`py-1 rounded font-semibold transition-all ${
+                                  secrets.email_provider === 'resend' ? 'bg-cyan-500 text-slate-950 shadow' : 'text-slate-400 hover:text-white'
+                                }`}
+                              >
+                                Resend (API)
+                              </button>
+                            </div>
+
+                            {/* SMTP Inputs */}
+                            {secrets.email_provider === 'smtp' && (
+                              <div className="space-y-2">
+                                <div>
+                                  <label className="block text-[10px] text-slate-400 mb-0.5">Gmail Address</label>
+                                  <input
+                                    type="email"
+                                    placeholder="your.email@gmail.com"
+                                    value={secrets.email_user}
+                                    onChange={(e) => setSecrets({ ...secrets, email_user: e.target.value })}
+                                    className="w-full bg-slate-950/60 text-slate-100 placeholder:text-slate-500 text-xs p-2 rounded-lg border border-white/10 outline-none focus:border-cyan-500 font-mono"
+                                  />
+                                </div>
+                                <div>
+                                  <div className="flex items-center justify-between mb-0.5">
+                                    <label className="block text-[10px] text-slate-400">16-char Google App Password</label>
+                                    <span className={`text-[10px] font-mono ${(secrets.email_pass || '').replace(/\s+/g, '').length === 16 ? 'text-emerald-400' : 'text-slate-500'}`}>
+                                      {(secrets.email_pass || '').replace(/\s+/g, '').length === 16 ? '✓ 16 chars' : `${(secrets.email_pass || '').replace(/\s+/g, '').length}/16`}
+                                    </span>
+                                  </div>
+                                  <div className="relative">
+                                    <input
+                                      type={showSecrets.email_pass ? 'text' : 'password'}
+                                      placeholder="abcd efgh ijkl mnop"
+                                      value={secrets.email_pass}
+                                      onChange={(e) => setSecrets({ ...secrets, email_pass: e.target.value })}
+                                      className="w-full bg-slate-950/60 text-slate-100 placeholder:text-slate-500 text-xs p-2 pr-8 rounded-lg border border-white/10 outline-none focus:border-cyan-500 font-mono"
+                                    />
+                                    <button
+                                      type="button"
+                                      onClick={() => setShowSecrets({ ...showSecrets, email_pass: !showSecrets.email_pass })}
+                                      className="absolute right-2 top-2 text-slate-400 hover:text-white"
+                                    >
+                                      {showSecrets.email_pass ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                                    </button>
+                                  </div>
+                                  <p className="text-[10px] text-amber-300/80 mt-1">Note: Render free tier blocks outbound SMTP. For Render, use Brevo or Resend (HTTPS port 443).</p>
+                                </div>
+                              </div>
+                            )}
+
+                            {/* Brevo Inputs */}
+                            {secrets.email_provider === 'brevo' && (
+                              <div className="space-y-2">
+                                <div>
+                                  <div className="flex items-center justify-between mb-0.5">
+                                    <label className="block text-[10px] text-slate-400">Brevo API Key (BREVO_API_KEY)</label>
+                                    <a href="https://app.brevo.com/settings/keys/api" target="_blank" rel="noreferrer" className="text-cyan-400 hover:underline text-[10px] flex items-center gap-0.5">
+                                      <span>Get key</span>
+                                      <ExternalLink className="w-2.5 h-2.5" />
+                                    </a>
+                                  </div>
+                                  <input
+                                    type={showSecrets.brevo_key ? 'text' : 'password'}
+                                    placeholder="xkeysib-..."
+                                    value={secrets.brevo_api_key}
+                                    onChange={(e) => setSecrets({ ...secrets, brevo_api_key: e.target.value })}
+                                    className="w-full bg-slate-950/60 text-slate-100 placeholder:text-slate-500 text-xs p-2 rounded-lg border border-white/10 outline-none focus:border-cyan-500 font-mono"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="block text-[10px] text-slate-400 mb-0.5">Verified Sender Email (EMAIL_FROM)</label>
+                                  <input
+                                    type="email"
+                                    placeholder="your-verified-email@domain.com"
+                                    value={secrets.email_from}
+                                    onChange={(e) => setSecrets({ ...secrets, email_from: e.target.value })}
+                                    className="w-full bg-slate-950/60 text-slate-100 placeholder:text-slate-500 text-xs p-2 rounded-lg border border-white/10 outline-none focus:border-cyan-500 font-mono"
+                                  />
+                                </div>
+                              </div>
+                            )}
+
+                            {/* Resend Inputs */}
+                            {secrets.email_provider === 'resend' && (
+                              <div className="space-y-2">
+                                <div>
+                                  <div className="flex items-center justify-between mb-0.5">
+                                    <label className="block text-[10px] text-slate-400">Resend API Key (RESEND_API_KEY)</label>
+                                    <a href="https://resend.com/api-keys" target="_blank" rel="noreferrer" className="text-cyan-400 hover:underline text-[10px] flex items-center gap-0.5">
+                                      <span>Get key</span>
+                                      <ExternalLink className="w-2.5 h-2.5" />
+                                    </a>
+                                  </div>
+                                  <input
+                                    type={showSecrets.resend_key ? 'text' : 'password'}
+                                    placeholder="re_..."
+                                    value={secrets.resend_api_key}
+                                    onChange={(e) => setSecrets({ ...secrets, resend_api_key: e.target.value })}
+                                    className="w-full bg-slate-950/60 text-slate-100 placeholder:text-slate-500 text-xs p-2 rounded-lg border border-white/10 outline-none focus:border-cyan-500 font-mono"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="block text-[10px] text-slate-400 mb-0.5">Sender Email (e.g. onboarding@resend.dev)</label>
+                                  <input
+                                    type="text"
+                                    placeholder="onboarding@resend.dev"
+                                    value={secrets.email_from}
+                                    onChange={(e) => setSecrets({ ...secrets, email_from: e.target.value })}
+                                    className="w-full bg-slate-950/60 text-slate-100 placeholder:text-slate-500 text-xs p-2 rounded-lg border border-white/10 outline-none focus:border-cyan-500 font-mono"
+                                  />
+                                </div>
+                              </div>
+                            )}
+
+                            {/* Action Buttons: Test Connection & Save */}
+                            <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-white/5">
+                              <button
+                                type="button"
+                                disabled={emailTesting}
+                                onClick={handleTestEmailConnection}
+                                className="px-2.5 py-1.5 rounded-lg bg-sky-500/10 hover:bg-sky-500/20 text-sky-300 border border-sky-500/30 text-xs font-medium transition-colors disabled:opacity-50 flex items-center gap-1"
+                              >
+                                {emailTesting ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Plug className="w-3 h-3" />}
+                                <span>{emailTesting ? 'Testing...' : 'Test Connection'}</span>
+                              </button>
+
+                              <div className="flex items-center gap-2">
+                                {credentialsSummary?.email?.configured && (
+                                  <button
+                                    type="button"
+                                    onClick={() => setIsEditingEmail(false)}
+                                    className="px-2.5 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-slate-400 text-xs transition-colors"
+                                  >
+                                    Cancel
+                                  </button>
+                                )}
+                                <button
+                                  type="button"
+                                  disabled={isSavingEmail}
+                                  onClick={() => handleSaveSecret('email')}
+                                  className="px-3.5 py-1.5 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-semibold text-xs shadow-md transition-colors flex items-center gap-1.5"
+                                >
+                                  {isSavingEmail ? (
+                                    <>
+                                      <RefreshCw className="w-3 h-3 animate-spin" />
+                                      <span>Saving...</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Save className="w-3 h-3" />
+                                      <span>Save Provider</span>
+                                    </>
+                                  )}
+                                </button>
+                              </div>
                             </div>
                           </div>
                         )}
@@ -1161,6 +1402,7 @@ export default function SettingsPage({ onNavigate = () => {} }) {
             })}
           </div>
         </div>
+        )
       )}
 
       {/* TAB 2: WORKFLOW TEMPLATES GALLERY */}

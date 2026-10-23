@@ -122,8 +122,33 @@ export default function WorkflowsPage({ onOpenIntegrations = () => {} }) {
   const [quickCredsError, setQuickCredsError] = useState('');
   const [quickCredsSuccess, setQuickCredsSuccess] = useState('');
   const [activeRunId, setActiveRunId] = useState(null);
+  const [serverConfiguredServices, setServerConfiguredServices] = useState({
+    email: false,
+    telegram: false,
+    checked: false
+  });
   const eventSourceRef = useRef(null);
   const logContainerRef = useRef(null);
+
+  const checkServerCredentials = async () => {
+    try {
+      const resp = await fetch(getApiUrl('/api/health'));
+      if (resp.ok) {
+        const data = await resp.json();
+        setServerConfiguredServices({
+          email: Boolean(data.email_configured || data.integrations?.email?.configured),
+          telegram: Boolean(data.integrations?.telegram?.configured),
+          checked: true
+        });
+      }
+    } catch (e) {
+      console.warn('Notice checking health in WorkflowsPage:', e);
+    }
+  };
+
+  useEffect(() => {
+    checkServerCredentials();
+  }, []);
 
   // Restore active workflow state from sessionStorage if returning from Integrations / another tab
   useEffect(() => {
@@ -755,6 +780,19 @@ export default function WorkflowsPage({ onOpenIntegrations = () => {} }) {
     connectEventSource(streamUrl);
   };
 
+  const handleRetryStep = (stepId) => {
+    if (!currentPlan || !currentPlan.workflow_id) return;
+    const wfId = currentPlan.workflow_id;
+    const runId = activeRunId;
+    const dryParam = dryRun ? 'true' : 'false';
+    const runParam = runId ? `&run_id=${encodeURIComponent(runId)}` : '';
+    const streamUrl = getApiUrl(`/api/workflows/${wfId}/stream?dry_run=${dryParam}${runParam}&retry_step_id=${encodeURIComponent(stepId)}`);
+    setIsRunning(true);
+    setRunResult(null);
+    setLogs((prev) => [...prev, `[${new Date().toLocaleTimeString()}] 🔄 Retrying step [${stepId}]...`]);
+    connectEventSource(streamUrl);
+  };
+
   const handleCancelWorkflow = async () => {
     if (!currentPlan) return;
     const wfId = currentPlan.workflow_id;
@@ -1248,15 +1286,32 @@ export default function WorkflowsPage({ onOpenIntegrations = () => {} }) {
       )}
 
       {/* Missing Credentials Alert Banner with 1-Click Action */}
-      {currentPlan && currentPlan.missing_credentials && currentPlan.missing_credentials.length > 0 && (
+      {currentPlan && serverConfiguredServices.checked && (currentPlan.missing_credentials || []).filter(mc => {
+        const key = (typeof mc === 'string' ? mc : mc.key || '').toUpperCase();
+        if (key.includes('EMAIL') && serverConfiguredServices.email) return false;
+        if (key.includes('TELEGRAM') && serverConfiguredServices.telegram) return false;
+        return true;
+      }).length > 0 && (
         <div className="p-4 rounded-2xl bg-amber-950/60 border border-amber-500/40 text-amber-200 text-xs space-y-3 shadow-lg backdrop-blur-md">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div className="flex items-center gap-2 font-semibold text-amber-300">
               <Key className="w-4 h-4 text-amber-400 flex-shrink-0" />
-              <span>Missing Integration Credentials ({currentPlan.missing_credentials.length})</span>
+              <span>Missing Integration Credentials ({
+                (currentPlan.missing_credentials || []).filter(mc => {
+                  const key = (typeof mc === 'string' ? mc : mc.key || '').toUpperCase();
+                  if (key.includes('EMAIL') && serverConfiguredServices.email) return false;
+                  if (key.includes('TELEGRAM') && serverConfiguredServices.telegram) return false;
+                  return true;
+                }).length
+              })</span>
             </div>
             <div className="flex items-center gap-2">
-              {currentPlan.missing_credentials.some(mc => (mc.key || mc).includes('EMAIL')) && (
+              {(currentPlan.missing_credentials || []).filter(mc => {
+                const key = (typeof mc === 'string' ? mc : mc.key || '').toUpperCase();
+                if (key.includes('EMAIL') && serverConfiguredServices.email) return false;
+                if (key.includes('TELEGRAM') && serverConfiguredServices.telegram) return false;
+                return true;
+              }).some(mc => (mc.key || mc).includes('EMAIL')) && (
                 <button
                   type="button"
                   onClick={() => {
@@ -1429,15 +1484,50 @@ export default function WorkflowsPage({ onOpenIntegrations = () => {} }) {
         <div className="space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3 p-4 rounded-2xl bg-slate-900/60 border border-white/10">
             <div>
-              <h2 className="text-base font-bold text-white flex items-center gap-2">
-                <span>{currentPlan.title}</span>
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="text-base font-bold text-white">
+                  {currentPlan.title}
+                </h2>
                 {dryRun && (
                   <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-violet-500/20 text-violet-300 border border-violet-500/30">
                     Dry Run Mode
                   </span>
                 )}
-              </h2>
-              <p className="text-xs text-slate-400">{currentPlan.description}</p>
+                {/* Overall Run Status Display */}
+                <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5 ${
+                  pendingApproval 
+                    ? 'bg-sky-500/10 text-sky-300 border border-sky-500/30'
+                    : isRunning
+                    ? 'bg-sky-500/20 text-sky-200 border border-sky-500/40'
+                    : runResult?.status === 'completed'
+                    ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                    : runResult?.status === 'partial'
+                    ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                    : runResult?.status === 'failed'
+                    ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
+                    : runResult?.status === 'cancelled'
+                    ? 'bg-slate-700 text-slate-300 border border-slate-600'
+                    : 'bg-slate-800 text-slate-400 border border-white/10'
+                }`}>
+                  {isRunning && !pendingApproval && <RotateCw className="w-2.5 h-2.5 animate-spin" />}
+                  <span>
+                    {pendingApproval
+                      ? 'Waiting for your approval'
+                      : isRunning
+                      ? 'Running'
+                      : runResult?.status === 'completed'
+                      ? 'Completed'
+                      : runResult?.status === 'partial'
+                      ? 'Partial'
+                      : runResult?.status === 'failed'
+                      ? 'Failed'
+                      : runResult?.status === 'cancelled'
+                      ? 'Cancelled'
+                      : 'Ready'}
+                  </span>
+                </span>
+              </div>
+              <p className="text-xs text-slate-400 mt-0.5">{currentPlan.description}</p>
             </div>
 
             {/* Run Now, Schedule, and Cancel Action Controls */}
@@ -1702,6 +1792,7 @@ export default function WorkflowsPage({ onOpenIntegrations = () => {} }) {
               selectedStepId={selectedStep ? selectedStep.id : null}
               pendingApproval={pendingApproval}
               onResolveApproval={handleResolveApproval}
+              onRetryStep={handleRetryStep}
               onSelectStep={(s) => setSelectedStep(s)}
               onOpenIntegrations={onOpenIntegrations}
             />

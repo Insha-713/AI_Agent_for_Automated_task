@@ -110,6 +110,10 @@ class ApprovalManager:
         Guarantees idempotence: repeated resolutions with the same decision return True.
         """
         decision_clean = decision.lower().strip()
+        if decision_clean in ("approved", "approve"):
+            decision_clean = "approve"
+        elif decision_clean in ("rejected", "reject"):
+            decision_clean = "reject"
         with self._lock:
             entry = self._pending.get(approval_id)
             if not entry:

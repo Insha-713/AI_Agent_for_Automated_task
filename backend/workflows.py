@@ -1147,11 +1147,12 @@ Allowed tools:
 # ==========================================
 
 class WorkflowExecutionEngine:
-    def __init__(self, workflow_id: str, plan: Dict[str, Any], dry_run: bool = False, run_id: Optional[str] = None):
+    def __init__(self, workflow_id: str, plan: Dict[str, Any], dry_run: bool = False, run_id: Optional[str] = None, retry_step_id: Optional[str] = None):
         self.workflow_id = workflow_id
         self.plan = plan
         self.dry_run = dry_run
         self.run_id = run_id or f"run_{uuid.uuid4().hex[:10]}"
+        self.retry_step_id = retry_step_id
         self.step_context: Dict[str, Any] = {}
         self.logs: List[Dict[str, Any]] = []
         self.is_cancelled = False
@@ -1419,9 +1420,9 @@ class WorkflowExecutionEngine:
             step_id = step["id"]
             tool_name = step["tool"]
 
-            # If this step was already completed in this run (prior to an approval pause and resume),
-            # yield its recorded result and skip re-execution
-            prior_completed = any(l.get("step_id") == step_id and l.get("status") == "completed" for l in self.logs)
+            # If retrying a specific step, force execution of that step while preserving completed prior steps
+            is_retrying_this_step = bool(self.retry_step_id and self.retry_step_id == step_id)
+            prior_completed = (not is_retrying_this_step) and any(l.get("step_id") == step_id and l.get("status") == "completed" for l in self.logs)
             if prior_completed and (step_id in self.step_context or f"{step_id}.output" in self.step_context):
                 cached_val = self.step_context.get(f"{step_id}.output", self.step_context.get(step_id, ""))
                 yield {
@@ -1512,13 +1513,22 @@ class WorkflowExecutionEngine:
 
             # Pre-flight credential check for sensitive actions
             if tool_name == "send_email" and not self.dry_run:
-                email_u = get_credential("EMAIL_USER") or get_credential("GMAIL_EMAIL")
-                email_p = get_credential("EMAIL_PASS") or get_credential("GMAIL_APP_PASSWORD")
-                if not email_u or not email_p:
-                    err_msg = (
-                        "Email integration is not configured. "
-                        "Please configure your Gmail address and 16-character Google App Password in Integrations settings before executing this step."
-                    )
+                from backend.email_provider import get_email_provider, is_email_configured
+                active_prov = get_email_provider()
+                if not is_email_configured(active_prov):
+                    if active_prov == "brevo":
+                        err_msg = "Brevo email integration is not configured. Set BREVO_API_KEY in server environment or Integrations settings."
+                        req_creds = ["BREVO_API_KEY"]
+                    elif active_prov == "resend":
+                        err_msg = "Resend email integration is not configured. Set RESEND_API_KEY in server environment or Integrations settings."
+                        req_creds = ["RESEND_API_KEY"]
+                    else:
+                        err_msg = (
+                            "Gmail SMTP integration is not configured. "
+                            "Please configure your Gmail address and 16-character Google App Password in Integrations settings before executing this step."
+                        )
+                        req_creds = ["EMAIL_USER", "EMAIL_PASS"]
+
                     self.logs.append({
                         "step_id": step_id,
                         "status": "failed",
@@ -1539,7 +1549,7 @@ class WorkflowExecutionEngine:
                         "status": "failed",
                         "display_status": "NEEDS SETUP",
                         "error": err_msg,
-                        "requires_credentials": ["EMAIL_USER", "EMAIL_PASS"]
+                        "requires_credentials": req_creds
                     }
                     overall_status = "failed"
                     break
@@ -1648,7 +1658,7 @@ class WorkflowExecutionEngine:
 
                     await asyncio.sleep(0.5)
 
-                if decision == "approve":
+                if decision in ("approve", "approved"):
                     await update_workflow_status(self.workflow_id, "running")
                     try:
                         await resolve_approval_record(approval_id, "approve")

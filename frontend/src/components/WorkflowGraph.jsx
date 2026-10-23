@@ -1,68 +1,67 @@
 import React, { useState } from 'react';
 import { 
-  Clock, 
-  Newspaper, 
-  Search, 
-  Globe, 
-  Compass, 
-  FileText, 
-  Folder, 
-  Mail, 
-  Send, 
-  CloudRain,
   CheckCircle2, 
+  RotateCw, 
   AlertCircle, 
-  Clock3, 
-  ShieldAlert, 
+  Clock, 
+  Mail, 
+  FileText, 
+  Send, 
+  Search, 
+  Newspaper, 
+  Globe, 
   Sparkles, 
-  Layers, 
   ChevronDown, 
   ChevronUp, 
-  ExternalLink,
-  RotateCw,
+  Layers,
   HelpCircle,
-  FileCheck,
   AlertTriangle,
-  Check,
-  X
+  Calendar,
+  Database,
+  ExternalLink,
+  ShieldCheck
 } from 'lucide-react';
 
 const TOOL_ICONS = {
-  get_datetime: Clock,
+  get_weather: Sparkles,
   get_latest_news: Newspaper,
   multi_search: Search,
-  web_search: Search,
   fetch_page: Globe,
-  search_sources: Compass,
-  save_file: FileText,
-  read_file: Folder,
-  list_files: Folder,
   send_email: Mail,
+  save_file: FileText,
   send_telegram_message: Send,
-  get_weather: CloudRain,
-  check_website_health: Globe,
+  get_datetime: Calendar,
+  read_important_emails: Mail,
+  analyze_tabular_data: Database,
+};
+
+const TOOL_ESTIMATES = {
+  get_weather: 'about 1 to 2 seconds',
+  send_email: 'about 2 to 5 seconds',
+  send_telegram_message: 'about 1 to 3 seconds',
+  save_file: 'about 1 to 2 seconds',
+  multi_search: 'about 3 to 6 seconds',
+  get_latest_news: 'about 2 to 4 seconds',
+  fetch_page: 'about 2 to 5 seconds',
+  get_datetime: 'under 1 second',
+  read_important_emails: 'about 2 to 4 seconds',
+  analyze_tabular_data: 'about 2 to 4 seconds'
 };
 
 const getHowToFixHint = (step) => {
-  const tool = step.tool;
-  const err = (step.error || '').toLowerCase();
-
-  if (tool === 'send_email') {
-    if (err.includes('password') || err.includes('auth')) {
-      return 'Gmail App Password failed. Generate a 16-character Google App Password and update it in Integrations.';
-    }
-    return 'Ensure EMAIL_USER and EMAIL_PASS are set in your environment or Integrations page.';
+  if (step.tool === 'send_email') {
+    return 'Verify EMAIL_PROVIDER or configure Brevo / Resend in Integrations settings.';
   }
-  if (tool === 'send_telegram_message') {
-    return 'Ensure TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are configured in Integrations.';
+  if (step.tool === 'send_telegram_message') {
+    return 'Verify TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in Integrations settings.';
   }
-  if (tool === 'get_latest_news' && (err.includes('no recent') || step.status === 'no_data')) {
-    return 'Google News RSS returned no articles for the chosen window. Try broadening the topic query.';
+  if (step.tool === 'multi_search' || step.tool === 'search_sources') {
+    return 'Check your internet connection. Search uses DuckDuckGo.';
   }
-  if (step.requires_approval) {
-    return 'This step is paused awaiting human approval. Click "Approve & Continue" on the card below to proceed.';
+  if (step.tool === 'get_latest_news') {
+    return 'Google News RSS returned no articles. Try broadening the topic query.';
   }
-  return 'Check parameters in the expanded view or verify backend logs.';
+  return 'Review parameters in the expanded view or check activity logs.';
 };
 
 export default function WorkflowGraph({ 
@@ -71,11 +70,11 @@ export default function WorkflowGraph({
   selectedStepId = null,
   pendingApproval = null,
   onResolveApproval = null,
+  onRetryStep = () => {},
   onSelectStep = () => {},
   onOpenIntegrations = () => {}
 }) {
   const [expandedStepIds, setExpandedStepIds] = useState({});
-  const [submittingDecision, setSubmittingDecision] = useState(null);
 
   const toggleExpand = (e, sid) => {
     e.stopPropagation();
@@ -122,28 +121,25 @@ export default function WorkflowGraph({
           const isNoData = step.status === 'no_data';
           const isExpanded = !!expandedStepIds[step.id];
 
-          // Node indicator status color
+          // Neutral status styling: Blue/Grey for running and waiting, Red ONLY for failed
           let nodeBg = 'bg-slate-800 border-white/20 text-slate-400';
           let borderClass = 'border-white/10 bg-slate-900/60';
-          let glowPulse = '';
 
           if (isWaitingApproval) {
-            nodeBg = 'bg-amber-500 text-black border-amber-300 shadow-lg shadow-amber-500/40 animate-pulse';
-            borderClass = 'border-amber-400/70 bg-amber-950/30 ring-1 ring-amber-400/50 shadow-lg shadow-amber-500/10';
-            glowPulse = 'animate-pulse';
+            nodeBg = 'bg-slate-700 text-sky-300 border-sky-400';
+            borderClass = 'border-sky-500/30 bg-slate-900/80';
           } else if (isRunning) {
-            nodeBg = 'bg-cyan-500 text-black border-cyan-300 shadow-glow-cyan animate-pulse';
-            borderClass = 'border-cyan-400/80 bg-cyan-950/30 ring-1 ring-cyan-400/50 shadow-glow-cyan';
-            glowPulse = 'animate-pulse';
+            nodeBg = 'bg-sky-500 text-slate-950 border-sky-300 shadow-md shadow-sky-500/20';
+            borderClass = 'border-sky-500/50 bg-slate-900/90 ring-1 ring-sky-500/30';
           } else if (isCompleted) {
-            nodeBg = 'bg-emerald-500 text-black border-emerald-300 shadow-glow-emerald';
-            borderClass = 'border-emerald-500/40 bg-emerald-950/20';
+            nodeBg = 'bg-emerald-500 text-slate-950 border-emerald-300';
+            borderClass = 'border-emerald-500/30 bg-slate-900/80';
           } else if (isFailed) {
             nodeBg = 'bg-rose-500 text-white border-rose-300';
-            borderClass = 'border-rose-500/60 bg-rose-950/30';
+            borderClass = 'border-rose-500/50 bg-rose-950/20';
           } else if (isNoData) {
             nodeBg = 'bg-amber-600 text-white border-amber-400';
-            borderClass = 'border-amber-500/50 bg-amber-950/30';
+            borderClass = 'border-amber-500/40 bg-slate-900/80';
           }
 
           // Plain language human-friendly label fallback
@@ -156,6 +152,8 @@ export default function WorkflowGraph({
             step.tool
           );
 
+          const estTime = TOOL_ESTIMATES[step.tool] || 'about 3 to 8 seconds';
+
           return (
             <div key={step.id || index} className="relative group">
               {/* Timeline Node Dot */}
@@ -167,7 +165,7 @@ export default function WorkflowGraph({
                 ) : isCompleted ? (
                   <CheckCircle2 className="w-3.5 h-3.5" />
                 ) : isWaitingApproval ? (
-                  <ShieldAlert className="w-3.5 h-3.5" />
+                  <ShieldCheck className="w-3.5 h-3.5" />
                 ) : isFailed ? (
                   <AlertCircle className="w-3.5 h-3.5" />
                 ) : (
@@ -178,17 +176,17 @@ export default function WorkflowGraph({
               {/* Step Card Container */}
               <div 
                 onClick={() => onSelectStep(step)}
-                className={`p-4 sm:p-5 rounded-2xl border backdrop-blur-md cursor-pointer transition-all duration-200 hover:border-cyan-500/40 ${borderClass}`}
+                className={`p-4 sm:p-5 rounded-2xl border backdrop-blur-md cursor-pointer transition-all duration-200 hover:border-sky-500/40 ${borderClass}`}
               >
                 {/* Header Row */}
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
                   <div className="flex items-center gap-3 min-w-0">
-                    <div className="p-2 rounded-xl bg-white/5 border border-white/10 text-cyan-300 flex-shrink-0">
+                    <div className="p-2 rounded-xl bg-white/5 border border-white/10 text-sky-300 flex-shrink-0">
                       <Icon className="w-4 h-4" />
                     </div>
                     <div className="min-w-0">
                       <div className="flex items-center gap-2">
-                        <span className="text-[11px] font-mono text-cyan-400 font-bold uppercase tracking-wider">
+                        <span className="text-[11px] font-mono text-sky-400 font-bold uppercase tracking-wider">
                           Step {index + 1}
                         </span>
                         {step.duration && (
@@ -196,8 +194,13 @@ export default function WorkflowGraph({
                             &bull; {step.duration}s
                           </span>
                         )}
+                        {isRunning && (
+                          <span className="text-[10px] font-mono text-slate-400">
+                            &bull; Est: {estTime}
+                          </span>
+                        )}
                       </div>
-                      <h4 className="text-sm font-semibold text-white truncate group-hover:text-cyan-300 transition-colors">
+                      <h4 className="text-sm font-semibold text-white truncate group-hover:text-sky-300 transition-colors">
                         {plainTitle}
                       </h4>
                     </div>
@@ -205,10 +208,10 @@ export default function WorkflowGraph({
 
                   {/* Status Badge & Expand Toggle */}
                   <div className="flex items-center gap-2 self-start sm:self-center">
-                    {/* Status badge */}
+                    {/* Status badge: Calm neutral styles */}
                     <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5 ${
-                      isWaitingApproval ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40' :
-                      isRunning ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40' :
+                      isWaitingApproval ? 'bg-sky-500/10 text-sky-300 border border-sky-500/30' :
+                      isRunning ? 'bg-sky-500/20 text-sky-200 border border-sky-500/40' :
                       isCompleted ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40' :
                       isFailed ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40' :
                       isNoData ? 'bg-amber-600/20 text-amber-300 border border-amber-600/40' :
@@ -246,51 +249,45 @@ export default function WorkflowGraph({
                     <button
                       type="button"
                       onClick={(e) => toggleExpand(e, step.id)}
-                      className="text-cyan-400 hover:underline text-[10px] font-semibold whitespace-nowrap ml-2"
+                      className="text-sky-400 hover:underline text-[10px] font-semibold whitespace-nowrap ml-2"
                     >
                       View Details
                     </button>
                   </div>
                 )}
 
-                {/* Single Approval Card Rule: In-step compact indicator pointing to the canonical card above */}
-                {isWaitingApproval && pendingApproval && (
-                  <div className="mt-2.5 pt-2 border-t border-amber-500/20 flex items-center justify-between text-xs text-amber-300">
-                    <span className="flex items-center gap-1.5 font-medium">
-                      <ShieldAlert className="w-3.5 h-3.5 text-amber-400 animate-pulse flex-shrink-0" />
-                      <span>Paused for human approval. See actionable card above.</span>
-                    </span>
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        document.getElementById('human-approval-card')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                      }}
-                      className="text-[10px] font-semibold text-amber-400 hover:text-amber-200 underline ml-2 whitespace-nowrap"
-                    >
-                      View Approval Card 👆
-                    </button>
-                  </div>
-                )}
-
-                {/* Failed Step "How to Fix" Callout */}
+                {/* Failed Step "How to Fix" Callout & Retry Step Button */}
                 {(isFailed || isNoData) && (
-                  <div className="mt-3 p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-xs space-y-1">
+                  <div className="mt-3 p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-xs space-y-2">
                     <div className="flex items-center gap-1.5 font-semibold text-rose-300">
                       <AlertTriangle className="w-3.5 h-3.5 text-rose-400 flex-shrink-0" />
                       <span>{step.error || 'Execution encountered an issue.'}</span>
                     </div>
-                    <div className="flex items-center justify-between text-[11px] text-slate-300 pt-1">
-                      <span className="text-amber-300">💡 Hint: {getHowToFixHint(step)}</span>
-                      {step.tool.includes('email') || step.tool.includes('telegram') ? (
+                    <p className="text-[11px] text-slate-300">
+                      Hint: {getHowToFixHint(step)}
+                    </p>
+                    <div className="flex flex-wrap items-center gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onRetryStep(step.id);
+                        }}
+                        className="px-3 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-white font-semibold text-xs flex items-center gap-1.5 shadow transition-colors"
+                      >
+                        <RotateCw className="w-3.5 h-3.5" />
+                        <span>Retry failed step</span>
+                      </button>
+
+                      {(step.tool.includes('email') || step.tool.includes('telegram')) && (
                         <button
                           type="button"
                           onClick={(e) => { e.stopPropagation(); onOpenIntegrations(); }}
-                          className="px-2 py-0.5 rounded bg-white/10 hover:bg-white/20 text-cyan-300 font-semibold text-[10px] ml-2 whitespace-nowrap"
+                          className="px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-slate-300 text-xs transition-colors"
                         >
                           Open Integrations
                         </button>
-                      ) : null}
+                      )}
                     </div>
                   </div>
                 )}
@@ -298,7 +295,6 @@ export default function WorkflowGraph({
                 {/* Expanded Accordion: Full Inputs & Outputs */}
                 {isExpanded && (
                   <div className="mt-3 pt-3 border-t border-white/10 space-y-3 animate-in fade-in duration-150">
-                    {/* Tool Parameters */}
                     <div>
                       <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">
                         Input Parameters
@@ -308,7 +304,6 @@ export default function WorkflowGraph({
                       </pre>
                     </div>
 
-                    {/* Step Output */}
                     {step.result && (
                       <div>
                         <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">
@@ -320,7 +315,6 @@ export default function WorkflowGraph({
                       </div>
                     )}
 
-                    {/* Technical Metadata */}
                     <div className="flex items-center justify-between text-[10px] text-slate-500 pt-1">
                       <span>Tool: <code className="text-slate-400">{step.tool}</code></span>
                       <span>Output Key: <code className="text-slate-400">{step.output_key}</code></span>

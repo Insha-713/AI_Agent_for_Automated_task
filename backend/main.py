@@ -212,8 +212,16 @@ class BulkUpdateSettingsRequest(BaseModel):
 
 
 class SaveEmailCredentialsRequest(BaseModel):
-    email_user: str
+    provider: Optional[str] = None
+    email_user: Optional[str] = None
     email_pass: Optional[str] = None
+    brevo_api_key: Optional[str] = None
+    resend_api_key: Optional[str] = None
+    email_from: Optional[str] = None
+
+
+class EmailTestRequest(BaseModel):
+    provider: Optional[str] = None
 
 
 class SaveTelegramCredentialsRequest(BaseModel):
@@ -315,9 +323,9 @@ async def health_check():
     model = get_active_model_name(prov)
     llm_conf = is_llm_configured(prov)
 
-    email_user = (get_credential("EMAIL_USER") or get_credential("GMAIL_EMAIL") or "").strip()
-    email_pass = (get_credential("EMAIL_PASS") or get_credential("GMAIL_APP_PASSWORD") or "").strip()
-    email_conf = bool(email_user and email_pass)
+    from backend.email_provider import get_email_provider, is_email_configured
+    email_prov = get_email_provider()
+    email_conf = is_email_configured(email_prov)
 
     bot_token = (get_credential("TELEGRAM_BOT_TOKEN") or "").strip()
     telegram_conf = bool(bot_token)
@@ -332,6 +340,8 @@ async def health_check():
         "app": "AgentFlow",
         "llm_provider": prov,
         "active_model": model,
+        "email_provider": email_prov,
+        "email_configured": email_conf,
         "database": {
             "type": db_type,
             "writable": db_writable,
@@ -347,6 +357,7 @@ async def health_check():
                 "configured": llm_conf
             },
             "email": {
+                "provider": email_prov,
                 "configured": email_conf
             },
             "telegram": {
@@ -458,25 +469,55 @@ async def get_integrations_credentials_endpoint():
     return get_masked_credentials_summary()
 
 
+@app.post("/api/integrations/email/test")
+@app.get("/api/integrations/email/test")
+async def test_email_integration_endpoint(req: Optional[EmailTestRequest] = None, provider: Optional[str] = None):
+    """
+    Validates connectivity and credentials with the chosen email provider (SMTP, Brevo, or Resend).
+    Performs handshake / API verification only; NEVER sends a real email.
+    """
+    from backend.email_provider import test_email_connection, get_email_provider
+    prov = (req.provider if req and req.provider else provider) or get_email_provider()
+    success, msg = await asyncio.to_thread(test_email_connection, prov)
+    return {
+        "success": success,
+        "provider": prov,
+        "message": msg
+    }
+
+
 @app.post("/api/integrations/credentials/email")
 async def save_email_credentials_endpoint(req: SaveEmailCredentialsRequest):
-    """Saves Gmail address and Google App Password persistently across SQLite, os.environ, and .env."""
-    email_user = req.email_user.strip()
-    if not email_user or "@" not in email_user:
-        raise HTTPException(status_code=400, detail="Please provide a valid Gmail address.")
+    """Saves email provider credentials (SMTP, Brevo, or Resend) persistently."""
+    from backend.email_provider import get_email_provider, is_email_configured
+    if req.provider:
+        prov = req.provider.strip().lower()
+        if prov in ("smtp", "brevo", "resend"):
+            set_credential("EMAIL_PROVIDER", prov)
 
-    set_credential("EMAIL_USER", email_user)
+    if req.email_user is not None and req.email_user.strip():
+        set_credential("EMAIL_USER", req.email_user.strip())
 
     if req.email_pass is not None and req.email_pass.strip():
         clean_pass = req.email_pass.strip().replace(" ", "")
         set_credential("EMAIL_PASS", clean_pass)
 
-    has_pass = bool(get_credential("EMAIL_PASS"))
+    if req.brevo_api_key is not None and req.brevo_api_key.strip():
+        set_credential("BREVO_API_KEY", req.brevo_api_key.strip())
+
+    if req.resend_api_key is not None and req.resend_api_key.strip():
+        set_credential("RESEND_API_KEY", req.resend_api_key.strip())
+
+    if req.email_from is not None and req.email_from.strip():
+        set_credential("EMAIL_FROM", req.email_from.strip())
+
+    curr_prov = get_email_provider()
+    configured = is_email_configured(curr_prov)
     return {
         "status": "success",
-        "message": "Email integration credentials saved successfully.",
-        "email_user": email_user,
-        "configured": bool(email_user and has_pass)
+        "message": f"Email credentials for '{curr_prov}' saved successfully.",
+        "provider": curr_prov,
+        "configured": configured
     }
 
 
@@ -485,6 +526,9 @@ async def delete_email_credentials_endpoint():
     """Clears saved email credentials."""
     delete_credential("EMAIL_USER")
     delete_credential("EMAIL_PASS")
+    delete_credential("BREVO_API_KEY")
+    delete_credential("RESEND_API_KEY")
+    delete_credential("EMAIL_FROM")
     return {"status": "success", "message": "Email integration credentials removed."}
 
 
@@ -1340,11 +1384,44 @@ async def cancel_run_endpoint(run_id: str):
     return {"message": f"Cancellation requested for run '{run_id}'."}
 
 
+class RetryStepRequest(BaseModel):
+    step_id: str
+    run_id: Optional[str] = None
+    dry_run: Optional[bool] = False
+
+
+@app.post("/api/workflows/{workflow_id}/retry-step")
+async def retry_step_endpoint(workflow_id: str, req: RetryStepRequest):
+    """
+    Initiates a retry for a specific failed step in a workflow run.
+    Returns the stream URL containing retry_step_id and run_id.
+    """
+    wf = await get_workflow_by_id(workflow_id)
+    if not wf:
+        raise HTTPException(status_code=404, detail=f"Workflow '{workflow_id}' not found.")
+    run_id = req.run_id
+    if not run_id:
+        active = await get_active_run_for_workflow(workflow_id)
+        if active:
+            run_id = active.get("id")
+    dry_param = "true" if req.dry_run else "false"
+    run_param = f"&run_id={run_id}" if run_id else ""
+    stream_url = f"/api/workflows/{workflow_id}/stream?dry_run={dry_param}{run_param}&retry_step_id={req.step_id}"
+    return {
+        "status": "ready",
+        "workflow_id": workflow_id,
+        "run_id": run_id,
+        "retry_step_id": req.step_id,
+        "stream_url": stream_url
+    }
+
+
 @app.get("/api/workflows/{workflow_id}/stream")
 async def stream_workflow_execution(
     workflow_id: str,
     dry_run: bool = Query(False),
-    run_id: Optional[str] = Query(None)
+    run_id: Optional[str] = Query(None),
+    retry_step_id: Optional[str] = Query(None)
 ):
     """
     Streams live step-by-step workflow execution over Server-Sent Events (SSE).
@@ -1364,7 +1441,9 @@ async def stream_workflow_execution(
         if active:
             run_id = active.get("id")
 
-    engine = WorkflowExecutionEngine(workflow_id, plan, dry_run=dry_run, run_id=run_id)
+    engine = WorkflowExecutionEngine(
+        workflow_id, plan, dry_run=dry_run, run_id=run_id, retry_step_id=retry_step_id
+    )
 
     async def sse_generator():
         try:

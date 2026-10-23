@@ -238,12 +238,13 @@ def load_all_credentials_into_env() -> Dict[str, bool]:
     _INITIALIZED = True
     print(f"[Credentials] Synchronized {synced_count} credentials from SQLite into runtime environment.")
 
-    email_user = get_credential("EMAIL_USER") or get_credential("GMAIL_EMAIL")
-    email_pass = get_credential("EMAIL_PASS") or get_credential("GMAIL_APP_PASSWORD")
+    from backend.email_provider import get_email_provider, is_email_configured
+    prov = get_email_provider()
     telegram_token = get_credential("TELEGRAM_BOT_TOKEN")
 
     return {
-        "email_configured": bool(email_user and email_pass),
+        "email_configured": is_email_configured(prov),
+        "email_provider": prov,
         "telegram_configured": bool(telegram_token),
     }
 
@@ -253,23 +254,32 @@ def get_masked_credentials_summary() -> Dict[str, Any]:
     Returns a safe, masked dictionary of integration statuses for the frontend.
     Never exposes raw passwords or tokens!
     """
-    email_user = get_credential("EMAIL_USER") or get_credential("GMAIL_EMAIL")
-    email_pass = get_credential("EMAIL_PASS") or get_credential("GMAIL_APP_PASSWORD")
+    from backend.email_provider import get_email_provider, is_email_configured, get_email_credentials
+    creds = get_email_credentials()
+    prov = creds["provider"]
+    email_conf = is_email_configured(prov)
+
     telegram_token = get_credential("TELEGRAM_BOT_TOKEN")
     telegram_chat = get_credential("TELEGRAM_CHAT_ID")
-
-    email_conf = bool(email_user and email_pass)
     telegram_conf = bool(telegram_token)
 
-    masked_pass = "••••••••••••••••" if email_pass else ""
+    masked_pass = "••••••••••••••••" if creds["email_pass"] else ""
+    masked_brevo = (creds["brevo_api_key"][:4] + "••••••••" + creds["brevo_api_key"][-4:]) if len(creds["brevo_api_key"]) > 8 else ("••••••••" if creds["brevo_api_key"] else "")
+    masked_resend = (creds["resend_api_key"][:4] + "••••••••" + creds["resend_api_key"][-4:]) if len(creds["resend_api_key"]) > 8 else ("••••••••" if creds["resend_api_key"] else "")
     masked_token = (telegram_token[:6] + "••••••••" + telegram_token[-4:]) if len(telegram_token) > 10 else ("••••••••" if telegram_token else "")
 
     return {
         "email": {
+            "provider": prov,
             "configured": email_conf,
-            "email_user": email_user or "",
-            "has_password": bool(email_pass),
+            "email_user": creds["email_user"] or "",
+            "email_from": creds["email_from"] or "",
+            "has_password": bool(creds["email_pass"]),
             "masked_password": masked_pass,
+            "has_brevo_key": bool(creds["brevo_api_key"]),
+            "masked_brevo_key": masked_brevo,
+            "has_resend_key": bool(creds["resend_api_key"]),
+            "masked_resend_key": masked_resend,
             "status": "connected" if email_conf else "not_configured"
         },
         "telegram": {
