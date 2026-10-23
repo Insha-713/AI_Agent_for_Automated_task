@@ -1371,6 +1371,20 @@ class WorkflowExecutionEngine:
                 for ex_l in existing_run["step_logs"]:
                     if not any(l.get("step_id") == ex_l.get("step_id") for l in self.logs):
                         self.logs.append(ex_l)
+            for st in existing_run.get("steps", []):
+                sid = st.get("step_id")
+                if st.get("status") == "completed" and sid:
+                    out = st.get("output_summary", "")
+                    if sid not in self.step_context:
+                        self.step_context[sid] = out
+                        self.step_context[f"{sid}.output"] = out
+                    if not any(l.get("step_id") == sid and l.get("status") == "completed" for l in self.logs):
+                        self.logs.append({
+                            "step_id": sid,
+                            "status": "completed",
+                            "result": out,
+                            "mock": False
+                        })
 
         yield {
             "type": "workflow_start",
@@ -1566,6 +1580,15 @@ class WorkflowExecutionEngine:
                 }
                 approval_manager.register_pending(approval_record)
                 await update_workflow_status(self.workflow_id, "waiting_for_approval")
+                try:
+                    await update_workflow_run_record(
+                        run_id=self.run_id,
+                        status="waiting_for_approval",
+                        step_results=self.step_context,
+                        step_logs=self.logs
+                    )
+                except Exception as e:
+                    print(f"[Workflows] Warning: failed to save run state on approval pause: {e}")
 
                 # Yield approval_required SSE event with fully rendered parameters for user inspection
                 yield {
