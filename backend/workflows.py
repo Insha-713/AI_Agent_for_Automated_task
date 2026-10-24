@@ -460,7 +460,8 @@ async def extract_workflow_requirements(prompt: str, user_context: Optional[Dict
                 "field": "resume_filename",
                 "question": "Please upload or specify your resume file (PDF or DOCX):",
                 "placeholder": "e.g., resume.pdf, resume.docx",
-                "input_type": "text",
+                "input_type": "file",
+                "accept": ".pdf,.docx,.doc,.txt",
                 "quick_replies": replies,
                 "is_secret": False,
                 "help_text": "Upload your resume using the Workspace Uploader, or choose an existing document in workspace/."
@@ -623,10 +624,11 @@ async def extract_workflow_requirements(prompt: str, user_context: Optional[Dict
             "field": "file",
             "question": "Which spreadsheet file in workspace/ should be cleaned?",
             "placeholder": "e.g., samples/student_placement_data.csv",
-            "input_type": "text",
+            "input_type": "file",
+            "accept": ".csv,.xlsx,.xls,.txt",
             "quick_replies": ["samples/student_placement_data.csv", "samples/freelance_agency_expenses.csv"],
             "is_secret": False,
-            "help_text": "Enter the relative path inside workspace/ of the CSV or spreadsheet to clean."
+            "help_text": "Enter the relative path inside workspace/ or upload the CSV or spreadsheet to clean."
         })
 
     # High-level goal summary

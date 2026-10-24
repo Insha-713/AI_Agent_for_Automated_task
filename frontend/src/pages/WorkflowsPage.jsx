@@ -617,8 +617,25 @@ export default function WorkflowsPage({ onOpenIntegrations = () => {} }) {
           if (ki.url) {
             enriched = enriched.replace(/\{url\}/gi, ki.url);
           }
+          if (ki.resume_filename) {
+            enriched = enriched.replace(/\{resume_filename\}/gi, ki.resume_filename);
+          }
+          if (ki.job_description) {
+            enriched = enriched.replace(/\{job_description\}/gi, ki.job_description);
+          }
           for (const [k, v] of Object.entries(ki)) {
             enriched = enriched.replace(new RegExp(`\\{${k}\\}`, 'gi'), String(v));
+          }
+
+          // If the prompt did not contain placeholders, append collected inputs explicitly
+          if (ki.resume_filename && !enriched.includes(ki.resume_filename)) {
+            enriched += ` with resume ${ki.resume_filename}`;
+          }
+          if (ki.job_description && !enriched.includes(ki.job_description)) {
+            enriched += ` for target job: ${ki.job_description}`;
+          }
+          if (ki.receiver_email && !enriched.includes(ki.receiver_email)) {
+            enriched += ` and email report to ${ki.receiver_email}`;
           }
         }
         setPrompt(enriched);

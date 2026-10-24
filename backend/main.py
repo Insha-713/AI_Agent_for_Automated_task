@@ -557,6 +557,7 @@ async def list_workspace_files():
             mtime = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(p.stat().st_mtime))
             files.append({
                 "name": rel,
+                "filename": rel,
                 "size_bytes": size,
                 "size_kb": round(size / 1024, 2),
                 "modified": mtime
