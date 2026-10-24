@@ -22,6 +22,7 @@ import {
   Loader2,
   FileCheck,
   Paperclip,
+  Trash2,
   X
 } from 'lucide-react';
 import { getApiUrl } from '../api/config';
@@ -91,6 +92,22 @@ export default function QuestionsPanel({
     }
   }, [currentQuestion?.id, isFileQuestion]);
 
+    const handleDeleteResume = async (fileIdentifier) => {
+    try {
+      setIsUploading(true);
+      await fetch(getApiUrl(`/api/workspace/resumes/${encodeURIComponent(fileIdentifier)}`), {
+        method: 'DELETE'
+      });
+      setUploadSuccess(null);
+      setCurrentAnswer('');
+      await fetchExistingWorkspaceFiles();
+    } catch (e) {
+      console.warn('Failed to delete resume:', e);
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
   const uploadFile = async (file) => {
     if (!file) return;
 
@@ -103,8 +120,8 @@ export default function QuestionsPanel({
     }
 
     // 2. Validate file size (15MB limit)
-    if (file.size > 15 * 1024 * 1024) {
-      setUploadError(`File is too large (${(file.size / (1024 * 1024)).toFixed(1)} MB). Maximum allowed size is 15 MB.`);
+    if (file.size > 5 * 1024 * 1024) {
+      setUploadError(`File is too large (${(file.size / (1024 * 1024)).toFixed(1)} MB). Maximum allowed size is 5 MB.`);
       return;
     }
 
@@ -124,9 +141,10 @@ export default function QuestionsPanel({
       const data = await res.json();
       if (res.ok && data.success) {
         setUploadSuccess({
+          file_id: data.file_id || data.filename,
           filename: data.filename,
           size_kb: data.size_kb,
-          message: data.message || `File "${data.filename}" saved to workspace.`
+          message: data.message || `File "${data.filename}" saved to workspace and database.`
         });
         setCurrentAnswer(data.filename);
         await fetchExistingWorkspaceFiles();
@@ -389,16 +407,36 @@ export default function QuestionsPanel({
                     </span>
                   )}
                 </div>
-                <button
-                  type="button"
-                  onClick={handleSubmit}
-                  disabled={isSubmitting}
-                  className="w-full py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shadow-md shadow-emerald-600/30 flex items-center justify-center gap-2 transition-all active:scale-95 cursor-pointer"
-                >
-                  <Check className="w-4 h-4" />
-                  <span>Use "{uploadSuccess.filename}" & Continue</span>
-                  <ArrowRight className="w-3.5 h-3.5" />
-                </button>
+                <div className="flex flex-col sm:flex-row gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={handleSubmit}
+                    disabled={isSubmitting}
+                    className="flex-1 py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shadow-md shadow-emerald-600/30 flex items-center justify-center gap-2 transition-all active:scale-95 cursor-pointer"
+                  >
+                    <Check className="w-4 h-4" />
+                    <span>Use "{uploadSuccess.filename}" & Continue</span>
+                    <ArrowRight className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteResume(uploadSuccess.file_id || uploadSuccess.filename)}
+                    disabled={isUploading}
+                    className="py-2.5 px-3 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/20 text-rose-300 text-xs font-medium flex items-center justify-center gap-1.5 transition-all cursor-pointer"
+                    title="Delete resume from database and workspace"
+                  >
+                    <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                    <span>Delete</span>
+                  </button>
+                </div>
+
+                {/* Cloud LLM Privacy Notice */}
+                <div className="p-2.5 rounded-xl bg-blue-950/40 border border-blue-500/30 text-[11px] text-blue-200 flex items-start gap-2">
+                  <ShieldCheck className="w-4 h-4 text-cyan-400 shrink-0 mt-0.5" />
+                  <span>
+                    <strong>Privacy Notice:</strong> Resumes contain personal data. Text is never written to public logs. When running AI enhancements, parsed text is securely sent to your configured LLM provider. You can delete your resume at any time.
+                  </span>
+                </div>
               </div>
             )}
 

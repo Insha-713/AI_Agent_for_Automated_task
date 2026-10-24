@@ -680,7 +680,26 @@ export default function WorkflowsPage({ onOpenIntegrations = () => {} }) {
             if (!prev) return prev;
             return {
               ...prev,
-              steps: prev.steps.map((s) => (s.id === data.step_id ? { ...s, status: 'completed', result: data.result, mock: data.mock } : s))
+              steps: prev.steps.map((s) => {
+                if (s.id !== data.step_id) return s;
+                // Verify tool match: reject output mismatch
+                if (data.tool && s.tool && data.tool !== s.tool) {
+                  return {
+                    ...s,
+                    status: 'failed',
+                    displayStatus: 'OUTPUT MISMATCH',
+                    error: `Output mismatch: Step '${s.id}' expected tool '${s.tool}' but received output from '${data.tool}'. Stale cache rejected.`,
+                    result: ''
+                  };
+                }
+                return {
+                  ...s,
+                  status: 'completed',
+                  result: data.result,
+                  mock: data.mock,
+                  durationSeconds: data.duration_seconds
+                };
+              })
             };
           });
           const preview = String(data.result).slice(0, 180).replace(/\n/g, ' ');
@@ -809,9 +828,12 @@ export default function WorkflowsPage({ onOpenIntegrations = () => {} }) {
     setErrorMsg('');
     setLogs([]);
     setRunResult(null);
-    setActiveRunId(null);
 
-    const streamUrl = getApiUrl(`/api/workflows/${currentPlan.workflow_id}/stream?dry_run=${dryRun ? 'true' : 'false'}`);
+    // Generate unique run_id to ensure 100% run isolation and prevent replaying old cached results
+    const freshRunId = `run_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    setActiveRunId(freshRunId);
+
+    const streamUrl = getApiUrl(`/api/workflows/${currentPlan.workflow_id}/stream?run_id=${encodeURIComponent(freshRunId)}&dry_run=${dryRun ? 'true' : 'false'}`);
     connectEventSource(streamUrl);
   };
 

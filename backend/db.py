@@ -500,6 +500,21 @@ async def init_db():
 
         await db.commit()
 
+        # 13. Uploaded Resumes table (Permanent DB storage for ephemeral disks)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS uploaded_resumes (
+                id TEXT PRIMARY KEY,
+                filename TEXT NOT NULL,
+                file_size INTEGER NOT NULL,
+                mime_type TEXT DEFAULT '',
+                raw_content BLOB,
+                extracted_text TEXT DEFAULT '',
+                created_at TEXT NOT NULL
+            );
+        """)
+
+        await db.commit()
+
         # Seed default monitors if none exist
         cursor = await db.execute("SELECT COUNT(*) FROM monitors;")
         count_res = await cursor.fetchone()
@@ -1765,3 +1780,81 @@ async def save_custom_template_to_db(tpl_data: Dict[str, Any]) -> Dict[str, Any]
         ))
         await db.commit()
     return await get_template_by_id_from_db(tpl_id)
+
+
+# ==========================================
+# Uploaded Resumes & Documents (DB Persistence)
+# ==========================================
+
+async def save_uploaded_resume(
+    file_id: str,
+    filename: str,
+    file_size: int,
+    mime_type: str = "",
+    raw_content: bytes = b"",
+    extracted_text: str = ""
+) -> Dict[str, Any]:
+    """Persists uploaded resume file into database to survive container restarts."""
+    now_str = datetime.now().isoformat()
+    clean_fn = os.path.basename(filename.replace("\\", "/").strip())
+    async with get_db() as db:
+        await db.execute("""
+            INSERT INTO uploaded_resumes (
+                id, filename, file_size, mime_type, raw_content, extracted_text, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                filename = excluded.filename,
+                file_size = excluded.file_size,
+                mime_type = excluded.mime_type,
+                raw_content = excluded.raw_content,
+                extracted_text = excluded.extracted_text,
+                created_at = excluded.created_at;
+        """, (file_id, clean_fn, file_size, mime_type, raw_content, extracted_text, now_str))
+        await db.commit()
+    return {
+        "id": file_id,
+        "filename": clean_fn,
+        "file_size": file_size,
+        "mime_type": mime_type,
+        "extracted_text": extracted_text,
+        "created_at": now_str
+    }
+
+async def get_uploaded_resume(file_id_or_filename: str) -> Optional[Dict[str, Any]]:
+    """Retrieves an uploaded resume by ID or exact filename."""
+    clean_target = file_id_or_filename.strip()
+    clean_base = os.path.basename(clean_target.replace("\\", "/"))
+    async with get_db() as db:
+        cursor = await db.execute("""
+            SELECT id, filename, file_size, mime_type, raw_content, extracted_text, created_at
+            FROM uploaded_resumes
+            WHERE id = ? OR filename = ? OR filename = ?
+            ORDER BY created_at DESC LIMIT 1
+        """, (clean_target, clean_target, clean_base))
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+async def list_uploaded_resumes() -> List[Dict[str, Any]]:
+    """Lists all uploaded resumes metadata (without raw bytes) ordered by most recent."""
+    async with get_db() as db:
+        cursor = await db.execute("""
+            SELECT id, filename, file_size, mime_type, created_at,
+                   LENGTH(extracted_text) as extracted_text_len
+            FROM uploaded_resumes
+            ORDER BY created_at DESC
+        """)
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+async def delete_uploaded_resume(file_id_or_filename: str) -> bool:
+    """Deletes an uploaded resume record from database."""
+    clean_target = file_id_or_filename.strip()
+    clean_base = os.path.basename(clean_target.replace("\\", "/"))
+    async with get_db() as db:
+        cursor = await db.execute("""
+            DELETE FROM uploaded_resumes
+            WHERE id = ? OR filename = ? OR filename = ?
+        """, (clean_target, clean_target, clean_base))
+        await db.commit()
+        return cursor.rowcount > 0

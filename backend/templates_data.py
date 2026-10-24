@@ -550,9 +550,9 @@ BUILTIN_TEMPLATES: List[Dict[str, Any]] = [
         "category": "Career",
         "badge": "Job Seekers",
         "icon": "FileCheck",
-        "description": "Upload resume (PDF/DOCX) and target job description to get an ATS compatibility score (out of 100), job match score, keyword gap analysis, improved resume bullet points without inventing facts, tailored cover letter, and application email draft sent to your email upon approval.",
+        "description": "Upload resume (PDF/DOCX) and target job description to get an ATS compatibility score (out of 100), keyword gap analysis, STAR-improved resume bullet points without inventing facts, tailored cover letter, and application email draft upon approval.",
         "prompt": "Analyze my resume for target job description, compute ATS score, extract keyword gaps, create tailored cover letter and improved resume without inventing facts, and email report to inshaf713@gmail.com.",
-        "tools_used": ["analyze_resume_and_job", "save_file", "send_email"],
+        "tools_used": ["parse_resume", "score_resume_ats", "generate_resume_improvements", "generate_cover_letter", "save_file", "send_email"],
         "required_credentials": ["EMAIL_USER", "EMAIL_PASS"],
         "default_inputs": {
             "resume_filename": "resume.pdf",
@@ -563,43 +563,78 @@ BUILTIN_TEMPLATES: List[Dict[str, Any]] = [
         "is_builtin": 1,
         "plan": {
             "title": "Resume & Job Application Assistant",
-            "description": "End-to-end ATS score evaluation, keyword gap identification, STAR-format resume bullet points, tailored cover letter, and application email delivery.",
+            "description": "Predefined career pipeline: Parse resume, compute rule-based ATS score out of 100, generate STAR resume improvements and tailored cover letter via LLM, save report, and send email upon approval.",
             "steps": [
                 {
                     "id": "step_1",
-                    "tool": "analyze_resume_and_job",
-                    "name": "Analyze Resume & Match Target Job Description",
+                    "tool": "parse_resume",
+                    "name": "Parse Resume Document (PDF/DOCX)",
                     "params": {
-                        "resume_filename": "resume.pdf",
-                        "job_description": "Software Engineer / AI Application Developer (Python, FastAPI, React, SQL, Git)"
+                        "resume_filename": "{{resume_filename}}"
                     },
-                    "output_key": "resume_analysis",
+                    "output_key": "step_1.output",
                     "requires_approval": False,
                     "required_credentials": []
                 },
                 {
                     "id": "step_2",
-                    "tool": "save_file",
-                    "name": "Save Analysis Report to workspace/resume_analysis_report.md",
+                    "tool": "score_resume_ats",
+                    "name": "Evaluate Transparent ATS Score & Keyword Gaps",
                     "params": {
-                        "filename": "resume_analysis_report.md",
-                        "content": "{{resume_analysis}}",
-                        "overwrite": True
+                        "resume_text": "{{step_1.output}}",
+                        "job_description": "{{job_description}}"
                     },
-                    "output_key": "saved_report",
+                    "output_key": "step_2.output",
                     "requires_approval": False,
                     "required_credentials": []
                 },
                 {
                     "id": "step_3",
-                    "tool": "send_email",
-                    "name": "Email Resume Analysis & Application Kit to inshaf713@gmail.com",
+                    "tool": "generate_resume_improvements",
+                    "name": "Generate STAR-Format Resume Improvements",
                     "params": {
-                        "to_email": "inshaf713@gmail.com",
-                        "subject": "AgentFlow: Resume & Job Application Analysis Report",
-                        "body": "Hello Insha,\n\nHere is your comprehensive Resume & Job Application Analysis Report, ATS score breakdown, and tailored application kit:\n\n{{resume_analysis}}\n\nGenerated autonomously by AgentFlow."
+                        "resume_text": "{{step_1.output}}",
+                        "job_description": "{{job_description}}"
                     },
-                    "output_key": "email_confirmation",
+                    "output_key": "step_3.output",
+                    "requires_approval": False,
+                    "required_credentials": []
+                },
+                {
+                    "id": "step_4",
+                    "tool": "generate_cover_letter",
+                    "name": "Draft Tailored Cover Letter",
+                    "params": {
+                        "resume_text": "{{step_1.output}}",
+                        "job_description": "{{job_description}}"
+                    },
+                    "output_key": "step_4.output",
+                    "requires_approval": False,
+                    "required_credentials": []
+                },
+                {
+                    "id": "step_5",
+                    "tool": "save_file",
+                    "name": "Save Comprehensive Report to workspace/resume_analysis_report.md",
+                    "params": {
+                        "filename": "resume_analysis_report.md",
+                        "content": "{{step_2.output}}\n\n---\n\n{{step_3.output}}\n\n---\n\n{{step_4.output}}",
+                        "overwrite": True
+                    },
+                    "output_key": "step_5.output",
+                    "requires_approval": False,
+                    "required_credentials": []
+                },
+                {
+                    "id": "step_6",
+                    "tool": "send_email",
+                    "name": "Email Resume Analysis & Application Kit",
+                    "params": {
+                        "to_email": "{{receiver_email}}",
+                        "subject": "AgentFlow: Resume & Job Application Analysis Report",
+                        "body": "Hello,\n\nHere is your comprehensive Resume & Job Application Analysis Report, ATS score breakdown, STAR-improved bullets, and tailored cover letter:\n\n{{step_2.output}}\n\n{{step_3.output}}\n\n{{step_4.output}}\n\nGenerated autonomously by AgentFlow."
+                    },
+                    "output_key": "step_6.output",
                     "requires_approval": True,
                     "required_credentials": ["EMAIL_USER", "EMAIL_PASS"]
                 }

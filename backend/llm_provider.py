@@ -288,3 +288,7 @@ def test_llm_connection(prompt: str = "Say 'AgentFlow connection OK' in 5 words 
             "message": f"{display_name} error: {sanitized_err}",
             "guidance": hint
         }
+
+
+# Backwards-compatible alias
+get_llm = get_chat_llm

@@ -49,6 +49,10 @@ from backend.tools import (
     get_weather,
     read_important_emails,
     analyze_resume_and_job,
+    parse_resume,
+    score_resume_ats,
+    generate_resume_improvements,
+    generate_cover_letter,
     WORKSPACE_PATH,
     _safe_workspace_path,
 )
@@ -213,6 +217,38 @@ REGISTERED_TOOLS_META = {
         "requires_approval": False,
         "required_credentials": [],
         "func": analyze_resume_and_job.func if hasattr(analyze_resume_and_job, "func") else analyze_resume_and_job,
+    },
+    "parse_resume": {
+        "display_name": "Parse Resume (PDF/DOCX)",
+        "description": "Extracts text and identified sections from PDF or DOCX resume without inventing missing details.",
+        "params": {"resume_filename": "str", "file_id": "str"},
+        "requires_approval": False,
+        "required_credentials": [],
+        "func": parse_resume.func if hasattr(parse_resume, "func") else parse_resume,
+    },
+    "score_resume_ats": {
+        "display_name": "Evaluate ATS Score & Keyword Gaps",
+        "description": "Computes transparent ATS compatibility score out of 100 based on keyword match, completeness, formatting, and measurable results.",
+        "params": {"resume_text": "str", "job_description": "str"},
+        "requires_approval": False,
+        "required_credentials": [],
+        "func": score_resume_ats.func if hasattr(score_resume_ats, "func") else score_resume_ats,
+    },
+    "generate_resume_improvements": {
+        "display_name": "Generate STAR Resume Improvements (AI)",
+        "description": "Uses configured LLM to generate improved STAR bullet points using ONLY verified resume facts without hallucination.",
+        "params": {"resume_text": "str", "job_description": "str"},
+        "requires_approval": False,
+        "required_credentials": [],
+        "func": generate_resume_improvements.func if hasattr(generate_resume_improvements, "func") else generate_resume_improvements,
+    },
+    "generate_cover_letter": {
+        "display_name": "Draft Tailored Cover Letter (AI)",
+        "description": "Uses configured LLM to draft a tailored 3-paragraph professional cover letter based strictly on verified resume facts.",
+        "params": {"resume_text": "str", "job_description": "str", "candidate_name": "str", "target_role": "str"},
+        "requires_approval": False,
+        "required_credentials": [],
+        "func": generate_cover_letter.func if hasattr(generate_cover_letter, "func") else generate_cover_letter,
     },
 }
 
@@ -1086,14 +1122,53 @@ async def generate_workflow_plan(prompt: str, preferences: Optional[Dict[str, st
     if not clean_prompt:
         raise ValueError("Task prompt cannot be empty.")
 
-    # 0. Check if prompt matches a built-in template exactly or by title
+    # 0. Check if prompt matches a built-in template exactly, by title, or by resume intent
     import copy
     from backend.templates_data import BUILTIN_TEMPLATES
     matched_tpl = next(
         (t for t in BUILTIN_TEMPLATES if t["prompt"].strip().lower() == clean_prompt.lower() or t["title"].strip().lower() == clean_prompt.lower()),
         None
     )
-    if matched_tpl and matched_tpl.get("plan") and matched_tpl["plan"].get("steps"):
+    p_lower = clean_prompt.lower()
+    is_resume_task = (
+        matched_tpl and matched_tpl.get("id") == "tpl-resume-job-assistant"
+    ) or (
+        ("resume" in p_lower or "cv" in p_lower or "job application" in p_lower) and
+        ("ats" in p_lower or "job" in p_lower or "assistant" in p_lower or "analyze" in p_lower or "match" in p_lower)
+    )
+
+    if is_resume_task:
+        resume_tpl = next((t for t in BUILTIN_TEMPLATES if t["id"] == "tpl-resume-job-assistant"), None)
+        if resume_tpl and resume_tpl.get("plan"):
+            plan_data = copy.deepcopy(resume_tpl["plan"])
+            
+            # Extract candidate parameters from prompt
+            fn_m = re.search(r"([\w\-]+\.(?:pdf|docx|doc|txt))", clean_prompt)
+            res_fn = fn_m.group(1) if fn_m else "resume.pdf"
+
+            email_m = re.search(r"[\w\.-]+@[\w\.-]+\.\w+", clean_prompt)
+            rec_email = email_m.group(0) if email_m else "inshaf713@gmail.com"
+
+            jd_m = re.search(r"(?:target job:?|for job:?|job description:?)\s*(.+?)(?=\s*and email|\s*$)", clean_prompt, re.IGNORECASE)
+            job_desc = jd_m.group(1).strip() if jd_m else "Software Engineer / AI Application Developer (Python, FastAPI, React, SQL, Git)"
+
+            # Bind actual user parameters into the fixed 6-step plan
+            for s in plan_data.get("steps", []):
+                if s["tool"] == "parse_resume":
+                    s["params"]["resume_filename"] = res_fn
+                elif s["tool"] in ("score_resume_ats", "generate_resume_improvements", "generate_cover_letter"):
+                    s["params"]["job_description"] = job_desc
+                elif s["tool"] == "send_email":
+                    s["params"]["to_email"] = rec_email
+
+            plan_data["inputs"] = {
+                "resume_filename": res_fn,
+                "job_description": job_desc,
+                "receiver_email": rec_email
+            }
+        else:
+            plan_data = None
+    elif matched_tpl and matched_tpl.get("plan") and matched_tpl["plan"].get("steps"):
         plan_data = copy.deepcopy(matched_tpl["plan"])
     else:
         plan_data = None
@@ -1277,6 +1352,61 @@ Allowed tools:
 # ==========================================
 # Step-by-Step Execution Engine
 # ==========================================
+
+
+def validate_workflow_plan_placeholders(plan: Dict[str, Any]) -> tuple[bool, Optional[str]]:
+    """
+    Validates that every placeholder in step parameters is produced by an earlier step
+    or provided in the workflow's initial inputs.
+    Rejects plans with unresolved placeholders before execution starts.
+    """
+    produced_keys = set()
+    
+    # Inputs provided by the plan
+    if plan.get("default_inputs"):
+        produced_keys.update(plan["default_inputs"].keys())
+    if plan.get("inputs"):
+        produced_keys.update(plan["inputs"].keys())
+
+    for idx, step in enumerate(plan.get("steps", [])):
+        step_id = step.get("id", f"step_{idx+1}")
+        raw_params = step.get("params", {})
+        
+        # Check all strings in parameters for placeholders
+        param_strings = []
+        def collect_strings(v):
+            if isinstance(v, str):
+                param_strings.append(v)
+            elif isinstance(v, list):
+                for item in v:
+                    collect_strings(item)
+            elif isinstance(v, dict):
+                for val in v.values():
+                    collect_strings(val)
+        collect_strings(raw_params)
+        
+        for s in param_strings:
+            # Check {{placeholder}} syntax
+            double_brace = re.findall(r"\{\{([a-zA-Z0-9_\.]+)\}\}" , s)
+            for placeholder in double_brace:
+                root_step = placeholder.split(".")[0]
+                if root_step not in produced_keys and placeholder not in produced_keys:
+                    return False, f"Workflow plan validation failed: Step '{step_id}' ({step.get('name', step_id)}) references placeholder '{{{{{placeholder}}}}}' which is not produced by any preceding step."
+            
+            # Check single-brace template placeholders like {search_results}
+            single_brace = re.findall(r"(?<!\{)\{([a-zA-Z0-9_]+)\}(?!\})", s)
+            for placeholder in single_brace:
+                if placeholder not in produced_keys and placeholder not in ("search_results", "weather_data", "news_results", "ist_time"):
+                    return False, f"Workflow plan validation failed: Step '{step_id}' references unresolved placeholder '{{{placeholder}}}' with single braces and no producing preceding step."
+
+        # Mark this step's outputs as produced for subsequent steps
+        produced_keys.add(step_id)
+        produced_keys.add(f"{step_id}.output")
+        if step.get("output_key"):
+            produced_keys.add(step["output_key"])
+
+    return True, None
+
 
 class WorkflowExecutionEngine:
     def __init__(self, workflow_id: str, plan: Dict[str, Any], dry_run: bool = False, run_id: Optional[str] = None, retry_step_id: Optional[str] = None):
@@ -1483,8 +1613,42 @@ class WorkflowExecutionEngine:
     async def stream_workflow(self) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Streams step-by-step execution events over SSE, updating SQLite/Postgres state.
+        Guarantees 100% per-run isolation, zero cross-run cache leakage, and tool verification.
         """
-        start_time = time.time()
+        start_time = time.perf_counter()
+
+        # 1. Pre-execution placeholder graph validation: fails before run starts if unresolved
+        is_valid, validation_err = validate_workflow_plan_placeholders(self.plan)
+        if not is_valid:
+            yield {
+                "type": "step_error",
+                "step_id": "validation_gate",
+                "status": "failed",
+                "display_status": "PLAN INVALID",
+                "error": validation_err,
+                "workflow_id": self.workflow_id,
+                "run_id": self.run_id
+            }
+            yield {
+                "type": "error",
+                "error": validation_err,
+                "workflow_id": self.workflow_id,
+                "run_id": self.run_id
+            }
+            return
+
+        # 2. Duplicate-run protection: only block if an identical run is currently active in progress
+        active = await get_active_run_for_workflow(self.workflow_id)
+        if active and active.get("id") != self.run_id:
+            err_msg = f"Duplicate run blocked: Run '{active['id']}' for this workflow is already in progress. Please wait for it to complete or resolve pending approvals."
+            yield {
+                "type": "error",
+                "error": err_msg,
+                "workflow_id": self.workflow_id,
+                "run_id": self.run_id
+            }
+            return
+
         wf_prompt = self.plan.get("title") or self.plan.get("description") or ""
         await create_workflow_run_record(
             run_id=self.run_id,
@@ -1495,28 +1659,37 @@ class WorkflowExecutionEngine:
         )
         await update_workflow_status(self.workflow_id, "running")
 
-        # Resume state if this run was already in progress (e.g., reconnected stream)
-        existing_run = await get_workflow_run_by_id(self.run_id)
-        if existing_run and existing_run.get("workflow_id") == self.workflow_id:
-            if existing_run.get("step_results"):
-                self.step_context.update(existing_run["step_results"])
-            if existing_run.get("step_logs"):
-                for ex_l in existing_run["step_logs"]:
-                    if not any(l.get("step_id") == ex_l.get("step_id") for l in self.logs):
-                        self.logs.append(ex_l)
-            for st in existing_run.get("steps", []):
-                sid = st.get("step_id")
-                if st.get("status") == "completed" and sid:
-                    out = st.get("output_summary", "")
-                    if sid not in self.step_context:
+        # 3. Clean state: Seed inputs from plan. NEVER load previous step outputs for a fresh run
+        if not self.retry_step_id:
+            self.step_context = {}
+            self.logs = []
+        if self.plan.get("default_inputs"):
+            self.step_context.update(self.plan["default_inputs"])
+        if self.plan.get("inputs"):
+            self.step_context.update(self.plan["inputs"])
+
+        # 4. Only in retry_step_id mode do we restore prior completed steps for THIS exact run_id
+        if self.retry_step_id:
+            existing_run = await get_workflow_run_by_id(self.run_id)
+            if existing_run and existing_run.get("workflow_id") == self.workflow_id:
+                for st in existing_run.get("steps", []):
+                    sid = st.get("step_id")
+                    if sid == self.retry_step_id:
+                        break  # Stop right before the step being retried
+                    if st.get("status") == "completed" and sid:
+                        out = st.get("output_summary", "")
+                        t_name = st.get("tool_name", "")
                         self.step_context[sid] = out
                         self.step_context[f"{sid}.output"] = out
-                    if not any(l.get("step_id") == sid and l.get("status") == "completed" for l in self.logs):
                         self.logs.append({
+                            "run_id": self.run_id,
                             "step_id": sid,
+                            "tool": t_name,
+                            "tool_name": t_name,
                             "status": "completed",
                             "result": out,
-                            "mock": False
+                            "mock": False,
+                            "duration_seconds": st.get("duration_seconds", 0.0)
                         })
 
         yield {
@@ -1552,31 +1725,45 @@ class WorkflowExecutionEngine:
             step_id = step["id"]
             tool_name = step["tool"]
 
-            # If retrying a specific step, force execution of that step while preserving completed prior steps
-            is_retrying_this_step = bool(self.retry_step_id and self.retry_step_id == step_id)
-            prior_completed = (not is_retrying_this_step) and any(l.get("step_id") == step_id and l.get("status") == "completed" for l in self.logs)
-            if prior_completed and (step_id in self.step_context or f"{step_id}.output" in self.step_context):
-                cached_val = self.step_context.get(f"{step_id}.output", self.step_context.get(step_id, ""))
-                yield {
-                    "type": "step_start",
-                    "step_index": idx,
-                    "step_id": step_id,
-                    "name": step["name"],
-                    "tool": tool_name,
-                    "requires_approval": False,
-                    "resumed": True
-                }
-                yield {
-                    "type": "step_result",
-                    "step_id": step_id,
-                    "name": step.get("name", ""),
-                    "tool": tool_name,
-                    "status": "completed",
-                    "result": cached_val,
-                    "mock": False,
-                    "resumed": True
-                }
-                continue
+            # Only allow resumed steps if we are specifically retrying a later step in THIS run
+            if self.retry_step_id and self.retry_step_id != step_id:
+                matching_prior = next((l for l in self.logs if l.get("step_id") == step_id and l.get("status") == "completed"), None)
+                if matching_prior:
+                    prior_tool = matching_prior.get("tool") or matching_prior.get("tool_name")
+                    # Tool Verification: If output does not match tool, mark step FAILED with Output mismatch
+                    if prior_tool and prior_tool != tool_name:
+                        err_msg = f"Output mismatch: Step '{step_id}' expected tool '{tool_name}' but cached step belongs to '{prior_tool}'."
+                        yield {
+                            "type": "step_error",
+                            "step_id": step_id,
+                            "status": "failed",
+                            "display_status": "FAILED",
+                            "error": err_msg
+                        }
+                        overall_status = "failed"
+                        break
+
+                    cached_val = self.step_context.get(f"{step_id}.output", self.step_context.get(step_id, ""))
+                    yield {
+                        "type": "step_start",
+                        "step_index": idx,
+                        "step_id": step_id,
+                        "name": step["name"],
+                        "tool": tool_name,
+                        "requires_approval": False,
+                        "resumed": True
+                    }
+                    yield {
+                        "type": "step_result",
+                        "step_id": step_id,
+                        "name": step.get("name", ""),
+                        "tool": tool_name,
+                        "status": "completed",
+                        "result": cached_val,
+                        "mock": False,
+                        "resumed": True
+                    }
+                    continue
 
             raw_params = step.get("params", {})
             resolved_params = self.substitute_params(raw_params)
@@ -1862,9 +2049,11 @@ class WorkflowExecutionEngine:
                     overall_status = "cancelled"
                     break
 
-            step_t0 = time.time()
+            step_t0 = time.perf_counter()
+            started_at_iso = datetime.now().isoformat()
             step_exec = await self.execute_step(step)
-            step_duration = round(time.time() - step_t0, 2)
+            finished_at_iso = datetime.now().isoformat()
+            step_duration = round(time.perf_counter() - step_t0, 3)
             step_status = step_exec["status"]
 
             if step_status == "completed":
@@ -1974,7 +2163,17 @@ class WorkflowExecutionEngine:
                 overall_status = "partial" if has_completed else "failed"
                 break
 
-        duration = round(time.time() - start_time, 2)
+        duration = round(time.perf_counter() - start_time, 3)
+
+        # Flag runs that finish in under 1 second while containing network/external tools as suspicious
+        NETWORK_TOOLS = {
+            "multi_search", "fetch_page", "get_latest_news", "web_search", "search_sources",
+            "send_email", "send_telegram_message", "parse_resume", "score_resume_ats",
+            "generate_resume_improvements", "generate_cover_letter"
+        }
+        has_network_tools = any(s.get("tool") in NETWORK_TOOLS for s in self.plan.get("steps", []))
+        if duration < 1.0 and has_network_tools and overall_status == "completed":
+            print(f"[WARNING] Suspicious rapid execution: Run '{self.run_id}' completed in {duration:.3f}s with network tools. Verifying step output freshness.")
 
         # Build comprehensive step_outputs and detect generated files
         step_outputs = []
@@ -1983,17 +2182,28 @@ class WorkflowExecutionEngine:
 
         for step in self.plan.get("steps", []):
             sid = step["id"]
-            tool_name = step.get("tool")
+            expected_tool = step.get("tool")
             s_log = step_log_map.get(sid, {})
+            recorded_tool = s_log.get("tool") or s_log.get("tool_name")
             s_status = s_log.get("status", "pending")
             s_res = s_log.get("result", "")
             s_err = s_log.get("error", "")
 
+            # Tool Verification Check: If output does not match expected tool, mark step FAILED with Output mismatch and suppress
+            if recorded_tool and recorded_tool != expected_tool:
+                s_status = "failed"
+                s_err = f"Output mismatch: Step '{sid}' expected output from tool '{expected_tool}' but recorded output belongs to '{recorded_tool}'. Output suppressed."
+                s_res = ""
+
             step_outputs.append({
+                "run_id": self.run_id,
                 "step_id": sid,
                 "name": step.get("name", sid),
-                "tool": tool_name,
+                "tool": expected_tool,
                 "params": self.substitute_params(step.get("params", {})),
+                "started_at": s_log.get("started_at"),
+                "finished_at": s_log.get("finished_at"),
+                "duration_seconds": s_log.get("duration_seconds", 0.0),
                 "status": s_status,
                 "display_status": s_log.get("display_status", s_status.upper()),
                 "result": s_res,

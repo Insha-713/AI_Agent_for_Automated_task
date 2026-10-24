@@ -70,6 +70,10 @@ from backend.db import (
     get_active_run_for_workflow,
     get_generated_file,
     save_generated_file,
+    save_uploaded_resume,
+    get_uploaded_resume,
+    list_uploaded_resumes,
+    delete_uploaded_resume,
     get_db,
 )
 from backend.agent import stream_agent_steps
@@ -567,37 +571,132 @@ async def list_workspace_files():
 
 @app.post("/api/workspace/upload")
 async def upload_workspace_file(file: UploadFile = File(...)):
-    """Uploads a PDF, TXT, CSV, MD, or JSON document into the sandboxed workspace."""
-    filename = Path(file.filename or "uploaded_file.txt").name
-    filename = os.path.basename(filename)
-    if not filename or filename.startswith("."):
+    """
+    Uploads a document into the sandboxed workspace and persists resumes in the database.
+    Strictly validates file size (max 5 MB) and sanitizes file names.
+    """
+    raw_name = Path(file.filename or "uploaded_file.txt").name
+    clean_base = re.sub(r"[^\w\.\-]", "_", os.path.basename(raw_name))
+    if not clean_base or clean_base.startswith("."):
         raise HTTPException(status_code=400, detail="Invalid file name.")
 
     allowed_exts = {".txt", ".pdf", ".csv", ".md", ".json", ".py", ".html", ".log", ".doc", ".docx"}
-    ext = Path(filename).suffix.lower()
+    ext = Path(clean_base).suffix.lower()
     if ext not in allowed_exts:
         raise HTTPException(
             status_code=400,
             detail=f"File extension '{ext}' not supported. Allowed: {', '.join(sorted(allowed_exts))}"
         )
 
-    target_path = (WORKSPACE_PATH / filename).resolve()
+    target_path = (WORKSPACE_PATH / clean_base).resolve()
     if not str(target_path).startswith(str(WORKSPACE_PATH.resolve())):
         raise HTTPException(status_code=403, detail="Access denied: path outside workspace.")
 
     try:
         content = await file.read()
+        MAX_FILE_SIZE = 5 * 1024 * 1024  # 5 MB limit
+        if len(content) > MAX_FILE_SIZE:
+            raise HTTPException(
+                status_code=400,
+                detail=f"File exceeds maximum allowed size of 5 MB ({round(len(content) / (1024 * 1024), 2)} MB uploaded)."
+            )
+
         target_path.write_bytes(content)
         size = len(content)
+
+        # If document is a resume or PDF/DOCX, extract text and store permanently in DB
+        file_id = f"res_{uuid.uuid4().hex[:10]}"
+        extracted_text = ""
+        if ext == ".pdf":
+            try:
+                from pypdf import PdfReader
+                import io
+                reader = PdfReader(io.BytesIO(content))
+                pages = [p.extract_text() or "" for p in reader.pages]
+                extracted_text = "\n".join(pages).strip()
+            except Exception:
+                pass
+        elif ext in (".docx", ".doc"):
+            try:
+                import zipfile
+                import io
+                import xml.etree.ElementTree as ET
+                with zipfile.ZipFile(io.BytesIO(content), "r") as zf:
+                    xml_content = zf.read("word/document.xml")
+                tree = ET.fromstring(xml_content)
+                paras = []
+                for p in tree.iter("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}p"):
+                    t_nodes = [e.text for e in p.iter("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t") if e.text]
+                    if t_nodes:
+                        paras.append("".join(t_nodes))
+                extracted_text = "\n".join(paras).strip()
+            except Exception:
+                pass
+        elif ext in (".txt", ".md"):
+            try:
+                extracted_text = content.decode("utf-8")
+            except Exception:
+                extracted_text = content.decode("latin-1", errors="ignore")
+
+        # Persist in uploaded_resumes table
+        try:
+            await save_uploaded_resume(
+                file_id=file_id,
+                filename=clean_base,
+                file_size=size,
+                mime_type=file.content_type or "application/octet-stream",
+                raw_content=content,
+                extracted_text=extracted_text
+            )
+        except Exception as dbe:
+            print(f"[Upload] Notice saving resume record to DB: {dbe}")
+
         return {
             "success": True,
-            "filename": filename,
+            "file_id": file_id,
+            "filename": clean_base,
             "size_bytes": size,
             "size_kb": round(size / 1024, 2),
-            "message": f"File '{filename}' successfully saved to workspace."
+            "message": f"File '{clean_base}' successfully saved to workspace and database."
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
+
+
+@app.get("/api/workspace/resumes")
+async def get_uploaded_resumes_endpoint():
+    """Lists uploaded resumes metadata from persistent database storage."""
+    try:
+        resumes = await list_uploaded_resumes()
+        return {"resumes": resumes, "count": len(resumes)}
+    except Exception as e:
+        return {"resumes": [], "count": 0, "error": str(e)}
+
+
+@app.delete("/api/workspace/resumes/{file_id}")
+async def delete_uploaded_resume_endpoint(file_id: str):
+    """Deletes an uploaded resume from both the persistent database and the workspace directory."""
+    db_res = await get_uploaded_resume(file_id)
+    fn = db_res["filename"] if db_res else file_id
+
+    # Delete from DB
+    await delete_uploaded_resume(file_id)
+
+    # Delete from workspace disk
+    safe_name = os.path.basename(fn)
+    target_path = (WORKSPACE_PATH / safe_name).resolve()
+    if target_path.exists() and str(target_path).startswith(str(WORKSPACE_PATH.resolve())):
+        try:
+            target_path.unlink()
+        except Exception:
+            pass
+
+    return {
+        "success": True,
+        "message": f"Resume '{safe_name}' deleted successfully from database and workspace."
+    }
 
 
 @app.delete("/api/workspace/files/{filename}")
@@ -1440,7 +1539,11 @@ async def stream_workflow_execution(
     if not run_id:
         active = await get_active_run_for_workflow(workflow_id)
         if active:
-            run_id = active.get("id")
+            raise HTTPException(
+                status_code=409,
+                detail=f"A run is already in progress for this workflow (run_id: {active['id']}). Please wait for it to complete or resolve pending approvals."
+            )
+        run_id = f"run_{uuid.uuid4().hex[:10]}"
 
     engine = WorkflowExecutionEngine(
         workflow_id, plan, dry_run=dry_run, run_id=run_id, retry_step_id=retry_step_id
