@@ -32,20 +32,37 @@ from backend.credentials import get_masked_credentials_summary
 
 BASE_URL = "http://127.0.0.1:8000"
 
+def _http_call(path, method="GET", data=None):
+    try:
+        req = urllib.request.Request(
+            f"{BASE_URL}{path}",
+            data=data,
+            headers={"Content-Type": "application/json"} if data else {}
+        )
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            return resp.status, json.loads(resp.read().decode())
+    except Exception:
+        from starlette.testclient import TestClient
+        from backend.main import app
+        with TestClient(app) as client:
+            if method == "GET":
+                r = client.get(path)
+            else:
+                r = client.post(path, content=data, headers={"Content-Type": "application/json"})
+            return r.status_code, r.json()
+
 def test_api_health():
     print("\n--- TEST: /api/health diagnostics ---")
-    req = urllib.request.Request(f"{BASE_URL}/api/health")
-    with urllib.request.urlopen(req, timeout=5) as resp:
-        assert resp.status == 200
-        data = json.loads(resp.read().decode())
-        print(f"[OK] Status: {data.get('status')}")
-        print(f"[OK] LLM Provider: {data.get('llm_provider')}, Model: {data.get('active_model')}")
-        print(f"[OK] Email Provider: {data.get('email_provider')}, Configured: {data.get('email_configured')}")
-        print(f"[OK] Database Type: {data.get('database_type')}, Writable: {data.get('database_writable')}")
-        assert "email_provider" in data
-        assert "database_type" in data
-        assert "database_writable" in data
-        assert data["database_writable"] is True
+    status, data = _http_call("/api/health")
+    assert status == 200
+    print(f"[OK] Status: {data.get('status')}")
+    print(f"[OK] LLM Provider: {data.get('llm_provider')}, Model: {data.get('active_model')}")
+    print(f"[OK] Email Provider: {data.get('email_provider')}, Configured: {data.get('email_configured')}")
+    print(f"[OK] Database Type: {data.get('database_type')}, Writable: {data.get('database_writable')}")
+    assert "email_provider" in data
+    assert "database_type" in data
+    assert "database_writable" in data
+    assert data["database_writable"] is True
 
 def test_smtp_blocked_port_diagnostic():
     print("\n--- TEST: Root Cause 1 - SMTP 5s timeout & blocked port diagnostic ---")
@@ -107,17 +124,11 @@ def test_brevo_and_resend_providers():
 def test_email_test_endpoint_api():
     print("\n--- TEST: Root Cause 1 - POST /api/integrations/email/test HTTP endpoint ---")
     payload = json.dumps({"provider": "brevo"}).encode()
-    req = urllib.request.Request(
-        f"{BASE_URL}/api/integrations/email/test",
-        data=payload,
-        headers={"Content-Type": "application/json"}
-    )
-    with urllib.request.urlopen(req, timeout=5) as resp:
-        assert resp.status == 200
-        data = json.loads(resp.read().decode())
-        print(f"[OK] Brevo HTTP test response: {data}")
-        assert "success" in data
-        assert data["provider"] == "brevo"
+    status, data = _http_call("/api/integrations/email/test", method="POST", data=payload)
+    assert status == 200
+    print(f"[OK] Brevo HTTP test response: {data}")
+    assert "success" in data
+    assert data["provider"] == "brevo"
 
 def test_single_canonical_approval_and_retry_step():
     print("\n--- TEST: Root Cause 2 & 3 - Workflow Engine with Approval & Retry Step ---")

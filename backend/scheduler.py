@@ -422,6 +422,27 @@ async def start_scheduler():
         )
         print("[Scheduler] Website Monitoring Sentinel registered (15m interval).")
 
+    # Daily Career Job Alert Sentinel (runs daily at 08:00 AM Asia/Kolkata)
+    if not scheduler.get_job("system_career_job_alerts"):
+        from backend.career import run_daily_job_alerts
+
+        async def _run_career_alerts():
+            try:
+                print("[Scheduler] Executing scheduled Daily Career Job Alerts...")
+                res = await run_daily_job_alerts()
+                print(f"[Scheduler] Daily Career Job Alerts completed: {res.get('status')}")
+            except Exception as e:
+                print(f"[Scheduler] Daily Career Job Alerts notice: {e}")
+
+        scheduler.add_job(
+            _run_career_alerts,
+            trigger=CronTrigger(hour=8, minute=0, timezone=get_safe_timezone("Asia/Kolkata")),
+            id="system_career_job_alerts",
+            name="Daily Career Job Alerts Sentinel",
+            replace_existing=True
+        )
+        print("[Scheduler] Daily Career Job Alerts Sentinel registered (08:00 IST).")
+
 
 
 def shutdown_scheduler():

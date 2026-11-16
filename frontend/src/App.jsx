@@ -13,6 +13,7 @@ import WorkflowsPage from './pages/WorkflowsPage';
 import NewsPage from './pages/NewsPage';
 import ReportsPage from './pages/ReportsPage';
 import MonitoringPage from './pages/MonitoringPage';
+import CareerPage from './pages/CareerPage';
 import { ShieldCheck, Heart } from 'lucide-react';
 
 export default function App() {
@@ -107,6 +108,7 @@ export default function App() {
               exit={{ opacity: 0, y: -8 }}
               transition={{ duration: 0.18, ease: 'easeOut' }}
             >
+              {activeTab === 'career' && <CareerPage />}
               {activeTab === 'workflows' && (
                 <WorkflowsPage 
                   dryRun={dryRun} 
@@ -142,7 +144,7 @@ export default function App() {
               <span>100% Private Local Inference &bull; No Paid APIs &bull; Sandboxed to <code className="text-cyan-300 font-mono">workspace/</code></span>
             </div>
             <div className="flex items-center gap-1.5 text-slate-400">
-              <span>AgentFlow v2.0 &bull; Built for India</span>
+              <span>AgentFlow v3.0 &bull; Intelligent Personal AI Career Assistant</span>
             </div>
           </div>
         </footer>

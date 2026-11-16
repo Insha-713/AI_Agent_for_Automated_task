@@ -134,6 +134,7 @@ from backend.integrations import (
     get_all_integrations_summary,
     get_curated_workflow_templates,
 )
+from backend.career_routes import router as career_router
 
 load_dotenv()
 
@@ -193,6 +194,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Register Career Agent Router (AgentFlow v3.0)
+app.include_router(career_router)
 
 
 # Request & Response Models

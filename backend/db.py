@@ -1,4 +1,4 @@
-"""
+﻿"""
 AgentFlow - Universal Database Layer (SQLite & PostgreSQL)
 Supports local SQLite (default) and external PostgreSQL (via DATABASE_URL on Render/Neon/Supabase).
 Persists task history, workflow execution runs, step logs, generated files, schedules, and approvals across redeploys.
@@ -7,10 +7,12 @@ Persists task history, workflow execution runs, step logs, generated files, sche
 import os
 import re
 import json
+import uuid
 import asyncio
+import threading
 from datetime import datetime
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 
@@ -38,7 +40,7 @@ def get_clean_database_url() -> str:
 
 # Global PostgreSQL connection pool
 _PG_POOL = None
-_PG_POOL_LOCK = threading_lock = asyncio.Lock() if hasattr(asyncio, "Lock") else None
+_PG_POOL_LOCK = threading.Lock()
 
 def _init_pg_pool():
     global _PG_POOL
@@ -509,6 +511,192 @@ async def init_db():
                 mime_type TEXT DEFAULT '',
                 raw_content BLOB,
                 extracted_text TEXT DEFAULT '',
+                created_at TEXT NOT NULL
+            );
+        """)
+
+        # 14. Career Profile table
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS career_profiles (
+                id TEXT PRIMARY KEY,
+                full_name TEXT DEFAULT '',
+                email TEXT DEFAULT '',
+                phone TEXT DEFAULT '',
+                college TEXT DEFAULT '',
+                education_json TEXT DEFAULT '[]',
+                technical_skills_json TEXT DEFAULT '[]',
+                programming_languages_json TEXT DEFAULT '[]',
+                ai_ml_skills_json TEXT DEFAULT '[]',
+                projects_json TEXT DEFAULT '[]',
+                experience_json TEXT DEFAULT '[]',
+                certifications_json TEXT DEFAULT '[]',
+                achievements_json TEXT DEFAULT '[]',
+                github_url TEXT DEFAULT '',
+                linkedin_url TEXT DEFAULT '',
+                portfolio_url TEXT DEFAULT '',
+                raw_cv_id TEXT DEFAULT '',
+                completeness_score INTEGER DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+        """)
+
+        # 15. Career Preferences table
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS career_preferences (
+                id TEXT PRIMARY KEY,
+                target_roles_json TEXT DEFAULT '[]',
+                preferred_industries_json TEXT DEFAULT '[]',
+                preferred_locations_json TEXT DEFAULT '[]',
+                workplace_types_json TEXT DEFAULT '[]',
+                job_types_json TEXT DEFAULT '[]',
+                expected_salary TEXT DEFAULT '',
+                experience_level TEXT DEFAULT 'Fresher / Entry-Level',
+                preferred_companies_json TEXT DEFAULT '[]',
+                min_match_score INTEGER DEFAULT 65,
+                updated_at TEXT NOT NULL
+            );
+        """)
+
+        # 16. Discovered Job Listings table
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS job_listings (
+                id TEXT PRIMARY KEY,
+                dedup_hash TEXT UNIQUE,
+                title TEXT NOT NULL,
+                company TEXT NOT NULL,
+                location TEXT DEFAULT 'Remote',
+                job_type TEXT DEFAULT 'Full-time',
+                workplace_type TEXT DEFAULT 'Remote',
+                experience_required TEXT DEFAULT '',
+                salary TEXT DEFAULT '',
+                posted_date TEXT DEFAULT '',
+                deadline TEXT DEFAULT '',
+                description TEXT DEFAULT '',
+                required_skills_json TEXT DEFAULT '[]',
+                source TEXT DEFAULT 'Web Aggregator',
+                original_url TEXT DEFAULT '',
+                is_expired INTEGER DEFAULT 0,
+                is_suspicious INTEGER DEFAULT 0,
+                discovered_at TEXT NOT NULL
+            );
+        """)
+        try:
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_job_listings_dedup ON job_listings(dedup_hash);")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_job_listings_discovered ON job_listings(discovered_at);")
+        except Exception:
+            pass
+
+        # 17. Job Matches table (ATS Evaluations)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS job_matches (
+                id TEXT PRIMARY KEY,
+                job_id TEXT NOT NULL,
+                profile_id TEXT NOT NULL,
+                overall_score INTEGER DEFAULT 0,
+                skill_score INTEGER DEFAULT 0,
+                matched_skills_json TEXT DEFAULT '[]',
+                missing_skills_json TEXT DEFAULT '[]',
+                education_score INTEGER DEFAULT 0,
+                experience_score INTEGER DEFAULT 0,
+                project_score INTEGER DEFAULT 0,
+                recommendations_json TEXT DEFAULT '[]',
+                breakdown_json TEXT DEFAULT '{}',
+                evaluated_at TEXT NOT NULL
+            );
+        """)
+
+        # 18. Resume Versions table
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS resume_versions (
+                id TEXT PRIMARY KEY,
+                profile_id TEXT NOT NULL,
+                job_id TEXT DEFAULT '',
+                target_role TEXT DEFAULT '',
+                title TEXT NOT NULL,
+                content_md TEXT NOT NULL,
+                is_active INTEGER DEFAULT 0,
+                version_number INTEGER DEFAULT 1,
+                created_at TEXT NOT NULL
+            );
+        """)
+
+        # 19. Cover Letters table
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS cover_letters (
+                id TEXT PRIMARY KEY,
+                profile_id TEXT NOT NULL,
+                job_id TEXT DEFAULT '',
+                company TEXT NOT NULL,
+                target_role TEXT NOT NULL,
+                tone TEXT DEFAULT 'Professional',
+                content_md TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+        """)
+
+        # 20. Job Applications table (Tracker)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS job_applications (
+                id TEXT PRIMARY KEY,
+                job_id TEXT DEFAULT '',
+                company TEXT NOT NULL,
+                job_title TEXT NOT NULL,
+                location TEXT DEFAULT '',
+                source TEXT DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'saved',
+                application_date TEXT DEFAULT '',
+                interview_date TEXT DEFAULT '',
+                followup_date TEXT DEFAULT '',
+                recruiter_name TEXT DEFAULT '',
+                recruiter_email TEXT DEFAULT '',
+                salary_offered TEXT DEFAULT '',
+                notes TEXT DEFAULT '',
+                checklist_json TEXT DEFAULT '[]',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+        """)
+
+        # 21. Application History timeline table
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS application_history (
+                id TEXT PRIMARY KEY,
+                application_id TEXT NOT NULL,
+                status_from TEXT DEFAULT '',
+                status_to TEXT NOT NULL,
+                notes TEXT DEFAULT '',
+                changed_at TEXT NOT NULL
+            );
+        """)
+
+        # 22. Career Alert Settings table
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS career_alert_settings (
+                id TEXT PRIMARY KEY,
+                enabled INTEGER DEFAULT 1,
+                daily_time TEXT DEFAULT '08:00',
+                timezone TEXT DEFAULT 'Asia/Kolkata',
+                categories_json TEXT DEFAULT '["AI Engineer", "Generative AI Engineer", "Data Scientist", "Python Developer"]',
+                locations_json TEXT DEFAULT '["Remote", "India", "Bengaluru", "Delhi NCR"]',
+                min_score INTEGER DEFAULT 65,
+                sources_json TEXT DEFAULT '["LinkedIn", "Wellfound", "Indeed", "RemoteOK", "Internshala"]',
+                channels_json TEXT DEFAULT '["dashboard", "email"]',
+                last_run TEXT,
+                next_run TEXT,
+                updated_at TEXT NOT NULL
+            );
+        """)
+
+        # 23. Career Reports table
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS career_reports (
+                id TEXT PRIMARY KEY,
+                report_type TEXT NOT NULL,
+                title TEXT NOT NULL,
+                summary TEXT DEFAULT '',
+                file_paths_json TEXT DEFAULT '[]',
+                metrics_json TEXT DEFAULT '{}',
                 created_at TEXT NOT NULL
             );
         """)
@@ -1858,3 +2046,905 @@ async def delete_uploaded_resume(file_id_or_filename: str) -> bool:
         """, (clean_target, clean_target, clean_base))
         await db.commit()
         return cursor.rowcount > 0
+
+
+# ==========================================
+# Career Profile & Preferences
+# ==========================================
+
+async def get_career_profile(profile_id: str = "default") -> Dict[str, Any]:
+    """Retrieves full career profile with parsed JSON fields."""
+    async with get_db() as db:
+        cursor = await db.execute("SELECT * FROM career_profiles WHERE id = ? LIMIT 1;", (profile_id,))
+        row = await cursor.fetchone()
+        if not row:
+            return {
+                "id": profile_id,
+                "full_name": "",
+                "email": "",
+                "phone": "",
+                "college": "",
+                "education": [],
+                "technical_skills": [],
+                "programming_languages": [],
+                "ai_ml_skills": [],
+                "projects": [],
+                "experience": [],
+                "certifications": [],
+                "achievements": [],
+                "github_url": "",
+                "linkedin_url": "",
+                "portfolio_url": "",
+                "raw_cv_id": "",
+                "completeness_score": 0,
+                "created_at": datetime.now().isoformat(),
+                "updated_at": datetime.now().isoformat()
+            }
+        d = dict(row)
+        for fld in ["education", "technical_skills", "programming_languages", "ai_ml_skills", "projects", "experience", "certifications", "achievements"]:
+            json_key = f"{fld}_json"
+            try:
+                d[fld] = json.loads(d.get(json_key) or "[]")
+            except Exception:
+                d[fld] = []
+        return d
+
+async def save_career_profile(p: Dict[str, Any], profile_id: str = "default") -> Dict[str, Any]:
+    """Saves or updates career profile and calculates completeness score."""
+    now_iso = datetime.now().isoformat()
+    pid = p.get("id") or profile_id
+
+    # Calculate completeness score (out of 100)
+    score = 0
+    if p.get("full_name"): score += 10
+    if p.get("email"): score += 10
+    if p.get("phone"): score += 5
+    if p.get("college") or p.get("education"): score += 15
+    if p.get("technical_skills") or p.get("programming_languages"): score += 15
+    if p.get("ai_ml_skills"): score += 10
+    if p.get("projects"): score += 15
+    if p.get("experience"): score += 10
+    if p.get("github_url") or p.get("linkedin_url"): score += 10
+    score = min(100, score)
+
+    async with get_db() as db:
+        await db.execute("""
+            INSERT INTO career_profiles (
+                id, full_name, email, phone, college,
+                education_json, technical_skills_json, programming_languages_json,
+                ai_ml_skills_json, projects_json, experience_json,
+                certifications_json, achievements_json, github_url, linkedin_url,
+                portfolio_url, raw_cv_id, completeness_score, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                full_name = excluded.full_name,
+                email = excluded.email,
+                phone = excluded.phone,
+                college = excluded.college,
+                education_json = excluded.education_json,
+                technical_skills_json = excluded.technical_skills_json,
+                programming_languages_json = excluded.programming_languages_json,
+                ai_ml_skills_json = excluded.ai_ml_skills_json,
+                projects_json = excluded.projects_json,
+                experience_json = excluded.experience_json,
+                certifications_json = excluded.certifications_json,
+                achievements_json = excluded.achievements_json,
+                github_url = excluded.github_url,
+                linkedin_url = excluded.linkedin_url,
+                portfolio_url = excluded.portfolio_url,
+                raw_cv_id = excluded.raw_cv_id,
+                completeness_score = excluded.completeness_score,
+                updated_at = excluded.updated_at;
+        """, (
+            pid,
+            p.get("full_name", ""),
+            p.get("email", ""),
+            p.get("phone", ""),
+            p.get("college", ""),
+            json.dumps(p.get("education", [])),
+            json.dumps(p.get("technical_skills", [])),
+            json.dumps(p.get("programming_languages", [])),
+            json.dumps(p.get("ai_ml_skills", [])),
+            json.dumps(p.get("projects", [])),
+            json.dumps(p.get("experience", [])),
+            json.dumps(p.get("certifications", [])),
+            json.dumps(p.get("achievements", [])),
+            p.get("github_url", ""),
+            p.get("linkedin_url", ""),
+            p.get("portfolio_url", ""),
+            p.get("raw_cv_id", ""),
+            score,
+            p.get("created_at") or now_iso,
+            now_iso
+        ))
+        await db.commit()
+    return await get_career_profile(pid)
+
+async def get_career_preferences(pref_id: str = "default") -> Dict[str, Any]:
+    """Retrieves career preferences."""
+    async with get_db() as db:
+        cursor = await db.execute("SELECT * FROM career_preferences WHERE id = ? LIMIT 1;", (pref_id,))
+        row = await cursor.fetchone()
+        if not row:
+            return {
+                "id": pref_id,
+                "target_roles": ["AI Engineer", "Generative AI Engineer", "Data Scientist", "Python Developer"],
+                "preferred_industries": ["AI & Machine Learning", "FinTech", "EdTech", "Software Engineering"],
+                "preferred_locations": ["Remote", "Bengaluru", "Delhi NCR", "Hyderabad", "Pune", "Mumbai"],
+                "workplace_types": ["Remote", "Hybrid"],
+                "job_types": ["Full-time", "Internship"],
+                "expected_salary": "₹10 LPA - ₹18 LPA",
+                "experience_level": "Fresher / Entry-Level (0-2 years)",
+                "preferred_companies": ["Google", "Microsoft", "OpenAI", "NVIDIA", "Top AI Startups"],
+                "min_match_score": 65,
+                "updated_at": datetime.now().isoformat()
+            }
+        d = dict(row)
+        for fld in ["target_roles", "preferred_industries", "preferred_locations", "workplace_types", "job_types", "preferred_companies"]:
+            try:
+                d[fld] = json.loads(d.get(f"{fld}_json") or "[]")
+            except Exception:
+                d[fld] = []
+        return d
+
+async def save_career_preferences(pref: Dict[str, Any], pref_id: str = "default") -> Dict[str, Any]:
+    """Saves or updates career preferences."""
+    now_iso = datetime.now().isoformat()
+    pid = pref.get("id") or pref_id
+    async with get_db() as db:
+        await db.execute("""
+            INSERT INTO career_preferences (
+                id, target_roles_json, preferred_industries_json,
+                preferred_locations_json, workplace_types_json, job_types_json,
+                expected_salary, experience_level, preferred_companies_json,
+                min_match_score, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                target_roles_json = excluded.target_roles_json,
+                preferred_industries_json = excluded.preferred_industries_json,
+                preferred_locations_json = excluded.preferred_locations_json,
+                workplace_types_json = excluded.workplace_types_json,
+                job_types_json = excluded.job_types_json,
+                expected_salary = excluded.expected_salary,
+                experience_level = excluded.experience_level,
+                preferred_companies_json = excluded.preferred_companies_json,
+                min_match_score = excluded.min_match_score,
+                updated_at = excluded.updated_at;
+        """, (
+            pid,
+            json.dumps(pref.get("target_roles", [])),
+            json.dumps(pref.get("preferred_industries", [])),
+            json.dumps(pref.get("preferred_locations", [])),
+            json.dumps(pref.get("workplace_types", [])),
+            json.dumps(pref.get("job_types", [])),
+            pref.get("expected_salary", ""),
+            pref.get("experience_level", "Fresher / Entry-Level"),
+            json.dumps(pref.get("preferred_companies", [])),
+            pref.get("min_match_score", 65),
+            now_iso
+        ))
+        await db.commit()
+    return await get_career_preferences(pid)
+
+
+# ==========================================
+# Job Listings & Deduplication
+# ==========================================
+
+import hashlib
+
+def compute_job_dedup_hash(company: str, title: str, location: str) -> str:
+    """Generates unique normalized SHA256 hash to prevent duplicate job insertion."""
+    norm_comp = re.sub(r"[^a-z0-9]", "", company.lower())
+    norm_titl = re.sub(r"[^a-z0-9]", "", title.lower())
+    norm_loc = re.sub(r"[^a-z0-9]", "", location.lower()[:15])
+    raw = f"{norm_comp}::{norm_titl}::{norm_loc}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
+
+async def save_job_listing(job: Dict[str, Any]) -> Tuple[Dict[str, Any], bool]:
+    """
+    Saves a job listing with deduplication. Returns (job_dict, is_new_record).
+    """
+    now_iso = datetime.now().isoformat()
+    jid = job.get("id") or f"job_{uuid.uuid4().hex[:12]}"
+    company = job.get("company", "").strip() or "Tech Company"
+    title = job.get("title", "").strip() or "AI Engineer"
+    location = job.get("location", "Remote").strip()
+    dedup_hash = job.get("dedup_hash") or compute_job_dedup_hash(company, title, location)
+
+    async with get_db() as db:
+        # Check if hash already exists
+        cursor = await db.execute("SELECT id FROM job_listings WHERE dedup_hash = ? LIMIT 1;", (dedup_hash,))
+        existing = await cursor.fetchone()
+        if existing:
+            # Return existing job
+            return await get_job_listing_by_id(existing[0]), False
+
+        await db.execute("""
+            INSERT INTO job_listings (
+                id, dedup_hash, title, company, location, job_type, workplace_type,
+                experience_required, salary, posted_date, deadline, description,
+                required_skills_json, source, original_url, is_expired, is_suspicious, discovered_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            jid,
+            dedup_hash,
+            title,
+            company,
+            location,
+            job.get("job_type", "Full-time"),
+            job.get("workplace_type", "Remote"),
+            job.get("experience_required", ""),
+            job.get("salary", ""),
+            job.get("posted_date", "Recently"),
+            job.get("deadline", ""),
+            job.get("description", ""),
+            json.dumps(job.get("required_skills", [])),
+            job.get("source", "Web Aggregator"),
+            job.get("original_url", ""),
+            1 if job.get("is_expired") else 0,
+            1 if job.get("is_suspicious") else 0,
+            job.get("discovered_at") or now_iso
+        ))
+        await db.commit()
+    saved = await get_job_listing_by_id(jid)
+    return saved, True
+
+async def save_job_listings_bulk(jobs: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Bulk inserts jobs, skipping duplicates."""
+    added = 0
+    duplicates = 0
+    inserted_jobs = []
+    for j in jobs:
+        saved_job, is_new = await save_job_listing(j)
+        if is_new:
+            added += 1
+            inserted_jobs.append(saved_job)
+        else:
+            duplicates += 1
+    return {
+        "added": added,
+        "duplicates": duplicates,
+        "total_processed": len(jobs),
+        "jobs": inserted_jobs
+    }
+
+async def get_job_listing_by_id(job_id: str) -> Optional[Dict[str, Any]]:
+    """Retrieves a single job listing by id."""
+    async with get_db() as db:
+        cursor = await db.execute("SELECT * FROM job_listings WHERE id = ? LIMIT 1;", (job_id,))
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        try:
+            d["required_skills"] = json.loads(d.get("required_skills_json") or "[]")
+        except Exception:
+            d["required_skills"] = []
+        d["is_expired"] = bool(d.get("is_expired", 0))
+        d["is_suspicious"] = bool(d.get("is_suspicious", 0))
+        return d
+
+async def list_job_listings(
+    limit: int = 100,
+    search: str = "",
+    category: str = "",
+    location: str = "",
+    workplace_type: str = "",
+    source: str = ""
+) -> List[Dict[str, Any]]:
+    """Lists discovered jobs with optional filtering."""
+    query = "SELECT * FROM job_listings WHERE 1=1"
+    params: List[Any] = []
+
+    if search.strip():
+        term = f"%{search.strip().lower()}%"
+        query += " AND (LOWER(title) LIKE ? OR LOWER(company) LIKE ? OR LOWER(description) LIKE ?)"
+        params.extend([term, term, term])
+
+    if category.strip():
+        term = f"%{category.strip().lower()}%"
+        query += " AND (LOWER(title) LIKE ? OR LOWER(description) LIKE ?)"
+        params.extend([term, term])
+
+    if location.strip():
+        term = f"%{location.strip().lower()}%"
+        query += " AND LOWER(location) LIKE ?"
+        params.append(term)
+
+    if workplace_type.strip():
+        query += " AND LOWER(workplace_type) = ?"
+        params.append(workplace_type.strip().lower())
+
+    if source.strip():
+        query += " AND LOWER(source) LIKE ?"
+        params.append(f"%{source.strip().lower()}%")
+
+    query += " ORDER BY discovered_at DESC LIMIT ?"
+    params.append(limit)
+
+    async with get_db() as db:
+        cursor = await db.execute(query, tuple(params))
+        rows = await cursor.fetchall()
+        jobs = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["required_skills"] = json.loads(d.get("required_skills_json") or "[]")
+            except Exception:
+                d["required_skills"] = []
+            d["is_expired"] = bool(d.get("is_expired", 0))
+            d["is_suspicious"] = bool(d.get("is_suspicious", 0))
+            jobs.append(d)
+        return jobs
+
+async def delete_job_listing(job_id: str) -> bool:
+    """Deletes a job listing and its matches."""
+    async with get_db() as db:
+        await db.execute("DELETE FROM job_matches WHERE job_id = ?;", (job_id,))
+        cursor = await db.execute("DELETE FROM job_listings WHERE id = ?;", (job_id,))
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+# ==========================================
+# Job Matches (ATS Scores)
+# ==========================================
+
+async def save_job_match(m: Dict[str, Any]) -> Dict[str, Any]:
+    """Saves or updates ATS score match for a job."""
+    mid = m.get("id") or f"match_{uuid.uuid4().hex[:12]}"
+    now_iso = datetime.now().isoformat()
+    async with get_db() as db:
+        await db.execute("""
+            INSERT INTO job_matches (
+                id, job_id, profile_id, overall_score, skill_score,
+                matched_skills_json, missing_skills_json, education_score,
+                experience_score, project_score, recommendations_json,
+                breakdown_json, evaluated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                overall_score = excluded.overall_score,
+                skill_score = excluded.skill_score,
+                matched_skills_json = excluded.matched_skills_json,
+                missing_skills_json = excluded.missing_skills_json,
+                education_score = excluded.education_score,
+                experience_score = excluded.experience_score,
+                project_score = excluded.project_score,
+                recommendations_json = excluded.recommendations_json,
+                breakdown_json = excluded.breakdown_json,
+                evaluated_at = excluded.evaluated_at;
+        """, (
+            mid,
+            m.get("job_id", ""),
+            m.get("profile_id", "default"),
+            m.get("overall_score", 0),
+            m.get("skill_score", 0),
+            json.dumps(m.get("matched_skills", [])),
+            json.dumps(m.get("missing_skills", [])),
+            m.get("education_score", 0),
+            m.get("experience_score", 0),
+            m.get("project_score", 0),
+            json.dumps(m.get("recommendations", [])),
+            json.dumps(m.get("breakdown", {})),
+            now_iso
+        ))
+        await db.commit()
+    return await get_job_match(m.get("job_id", ""), m.get("profile_id", "default"))
+
+async def get_job_match(job_id: str, profile_id: str = "default") -> Optional[Dict[str, Any]]:
+    """Retrieves match record for a specific job."""
+    async with get_db() as db:
+        cursor = await db.execute("""
+            SELECT * FROM job_matches
+            WHERE job_id = ? AND profile_id = ?
+            ORDER BY evaluated_at DESC LIMIT 1;
+        """, (job_id, profile_id))
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        try:
+            d["matched_skills"] = json.loads(d.get("matched_skills_json") or "[]")
+        except Exception:
+            d["matched_skills"] = []
+        try:
+            d["missing_skills"] = json.loads(d.get("missing_skills_json") or "[]")
+        except Exception:
+            d["missing_skills"] = []
+        try:
+            d["recommendations"] = json.loads(d.get("recommendations_json") or "[]")
+        except Exception:
+            d["recommendations"] = []
+        try:
+            d["breakdown"] = json.loads(d.get("breakdown_json") or "{}")
+        except Exception:
+            d["breakdown"] = {}
+        return d
+
+async def list_job_matches(profile_id: str = "default") -> List[Dict[str, Any]]:
+    """Lists all ATS job matches for a profile."""
+    async with get_db() as db:
+        cursor = await db.execute("""
+            SELECT m.*, j.title, j.company, j.location, j.salary, j.workplace_type
+            FROM job_matches m
+            LEFT JOIN job_listings j ON m.job_id = j.id
+            WHERE m.profile_id = ?
+            ORDER BY m.overall_score DESC;
+        """, (profile_id,))
+        rows = await cursor.fetchall()
+        matches = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["matched_skills"] = json.loads(d.get("matched_skills_json") or "[]")
+            except Exception:
+                d["matched_skills"] = []
+            try:
+                d["missing_skills"] = json.loads(d.get("missing_skills_json") or "[]")
+            except Exception:
+                d["missing_skills"] = []
+            matches.append(d)
+        return matches
+
+
+# ==========================================
+# Resume Versions & Cover Letters
+# ==========================================
+
+async def save_resume_version(rv: Dict[str, Any]) -> Dict[str, Any]:
+    """Saves a customized resume version."""
+    rid = rv.get("id") or f"res_v_{uuid.uuid4().hex[:10]}"
+    now_iso = datetime.now().isoformat()
+    async with get_db() as db:
+        cursor = await db.execute("SELECT COUNT(*) FROM resume_versions WHERE profile_id = ?;", (rv.get("profile_id", "default"),))
+        cnt = (await cursor.fetchone())[0] + 1
+        await db.execute("""
+            INSERT INTO resume_versions (
+                id, profile_id, job_id, target_role, title, content_md, is_active, version_number, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            rid,
+            rv.get("profile_id", "default"),
+            rv.get("job_id", ""),
+            rv.get("target_role", "AI Engineer"),
+            rv.get("title", f"Resume v{cnt} - {rv.get('target_role', 'Target')}"),
+            rv.get("content_md", ""),
+            1 if rv.get("is_active") else 0,
+            rv.get("version_number", cnt),
+            now_iso
+        ))
+        await db.commit()
+    return await get_resume_version_by_id(rid)
+
+async def list_resume_versions(profile_id: str = "default") -> List[Dict[str, Any]]:
+    """Lists saved resume versions."""
+    async with get_db() as db:
+        cursor = await db.execute("""
+            SELECT id, profile_id, job_id, target_role, title, is_active, version_number, created_at,
+                   LENGTH(content_md) as content_length
+            FROM resume_versions
+            WHERE profile_id = ?
+            ORDER BY created_at DESC;
+        """, (profile_id,))
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+async def get_resume_version_by_id(version_id: str) -> Optional[Dict[str, Any]]:
+    """Gets single resume version by ID."""
+    async with get_db() as db:
+        cursor = await db.execute("SELECT * FROM resume_versions WHERE id = ? LIMIT 1;", (version_id,))
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+async def delete_resume_version(version_id: str) -> bool:
+    """Deletes a resume version."""
+    async with get_db() as db:
+        cursor = await db.execute("DELETE FROM resume_versions WHERE id = ?;", (version_id,))
+        await db.commit()
+        return cursor.rowcount > 0
+
+async def save_cover_letter(cl: Dict[str, Any]) -> Dict[str, Any]:
+    """Saves a generated cover letter."""
+    cid = cl.get("id") or f"cov_{uuid.uuid4().hex[:10]}"
+    now_iso = datetime.now().isoformat()
+    async with get_db() as db:
+        await db.execute("""
+            INSERT INTO cover_letters (
+                id, profile_id, job_id, company, target_role, tone, content_md, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            cid,
+            cl.get("profile_id", "default"),
+            cl.get("job_id", ""),
+            cl.get("company", "Company"),
+            cl.get("target_role", "AI Engineer"),
+            cl.get("tone", "Professional"),
+            cl.get("content_md", ""),
+            now_iso
+        ))
+        await db.commit()
+    return await get_cover_letter_by_id(cid)
+
+async def list_cover_letters(profile_id: str = "default") -> List[Dict[str, Any]]:
+    """Lists saved cover letters."""
+    async with get_db() as db:
+        cursor = await db.execute("""
+            SELECT id, profile_id, job_id, company, target_role, tone, created_at,
+                   LENGTH(content_md) as content_length
+            FROM cover_letters
+            WHERE profile_id = ?
+            ORDER BY created_at DESC;
+        """, (profile_id,))
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+async def get_cover_letter_by_id(letter_id: str) -> Optional[Dict[str, Any]]:
+    """Retrieves cover letter by id."""
+    async with get_db() as db:
+        cursor = await db.execute("SELECT * FROM cover_letters WHERE id = ? LIMIT 1;", (letter_id,))
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+async def delete_cover_letter(letter_id: str) -> bool:
+    """Deletes cover letter by id."""
+    async with get_db() as db:
+        cursor = await db.execute("DELETE FROM cover_letters WHERE id = ?;", (letter_id,))
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+# ==========================================
+# Application Tracker & History
+# ==========================================
+
+async def save_job_application(app_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Creates or updates a job application."""
+    aid = app_data.get("id") or f"app_{uuid.uuid4().hex[:10]}"
+    now_iso = datetime.now().isoformat()
+    status = app_data.get("status", "saved")
+
+    async with get_db() as db:
+        # Check if already exists to record history
+        cursor = await db.execute("SELECT status FROM job_applications WHERE id = ?;", (aid,))
+        prior = await cursor.fetchone()
+        if prior and prior[0] != status:
+            # Record status transition
+            await db.execute("""
+                INSERT INTO application_history (id, application_id, status_from, status_to, notes, changed_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (f"hist_{uuid.uuid4().hex[:8]}", aid, prior[0], status, app_data.get("notes", "Status updated"), now_iso))
+
+        await db.execute("""
+            INSERT INTO job_applications (
+                id, job_id, company, job_title, location, source, status,
+                application_date, interview_date, followup_date, recruiter_name,
+                recruiter_email, salary_offered, notes, checklist_json, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                company = excluded.company,
+                job_title = excluded.job_title,
+                location = excluded.location,
+                source = excluded.source,
+                status = excluded.status,
+                application_date = excluded.application_date,
+                interview_date = excluded.interview_date,
+                followup_date = excluded.followup_date,
+                recruiter_name = excluded.recruiter_name,
+                recruiter_email = excluded.recruiter_email,
+                salary_offered = excluded.salary_offered,
+                notes = excluded.notes,
+                checklist_json = excluded.checklist_json,
+                updated_at = excluded.updated_at;
+        """, (
+            aid,
+            app_data.get("job_id", ""),
+            app_data.get("company", "Company"),
+            app_data.get("job_title", "Role"),
+            app_data.get("location", "Remote"),
+            app_data.get("source", "Direct"),
+            status,
+            app_data.get("application_date", now_iso[:10] if status == "applied" else ""),
+            app_data.get("interview_date", ""),
+            app_data.get("followup_date", ""),
+            app_data.get("recruiter_name", ""),
+            app_data.get("recruiter_email", ""),
+            app_data.get("salary_offered", ""),
+            app_data.get("notes", ""),
+            json.dumps(app_data.get("checklist", [])),
+            app_data.get("created_at") or now_iso,
+            now_iso
+        ))
+        await db.commit()
+    return await get_job_application_by_id(aid)
+
+async def update_application_status(app_id: str, new_status: str, notes: str = "") -> Optional[Dict[str, Any]]:
+    """Updates application status with historical timeline record."""
+    now_iso = datetime.now().isoformat()
+    async with get_db() as db:
+        cursor = await db.execute("SELECT status FROM job_applications WHERE id = ?;", (app_id,))
+        prior = await cursor.fetchone()
+        if not prior:
+            return None
+        old_status = prior[0]
+        await db.execute("""
+            UPDATE job_applications
+            SET status = ?, notes = CASE WHEN ? != '' THEN ? ELSE notes END, updated_at = ?
+            WHERE id = ?;
+        """, (new_status, notes, notes, now_iso, app_id))
+
+        await db.execute("""
+            INSERT INTO application_history (id, application_id, status_from, status_to, notes, changed_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (f"hist_{uuid.uuid4().hex[:8]}", app_id, old_status, new_status, notes or f"Moved to {new_status}", now_iso))
+        await db.commit()
+    return await get_job_application_by_id(app_id)
+
+async def get_job_application_by_id(app_id: str) -> Optional[Dict[str, Any]]:
+    """Retrieves single job application."""
+    async with get_db() as db:
+        cursor = await db.execute("SELECT * FROM job_applications WHERE id = ? LIMIT 1;", (app_id,))
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        try:
+            d["checklist"] = json.loads(d.get("checklist_json") or "[]")
+        except Exception:
+            d["checklist"] = []
+        return d
+
+async def list_job_applications(status: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Lists all job applications, optionally filtered by status."""
+    query = "SELECT * FROM job_applications WHERE 1=1"
+    params: List[Any] = []
+    if status and status.strip():
+        query += " AND status = ?"
+        params.append(status.strip().lower())
+    query += " ORDER BY updated_at DESC;"
+
+    async with get_db() as db:
+        cursor = await db.execute(query, tuple(params))
+        rows = await cursor.fetchall()
+        apps = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["checklist"] = json.loads(d.get("checklist_json") or "[]")
+            except Exception:
+                d["checklist"] = []
+            apps.append(d)
+        return apps
+
+async def delete_job_application(app_id: str) -> bool:
+    """Deletes an application and its history."""
+    async with get_db() as db:
+        await db.execute("DELETE FROM application_history WHERE application_id = ?;", (app_id,))
+        cursor = await db.execute("DELETE FROM job_applications WHERE id = ?;", (app_id,))
+        await db.commit()
+        return cursor.rowcount > 0
+
+async def get_application_history(app_id: str) -> List[Dict[str, Any]]:
+    """Retrieves status change history for an application."""
+    async with get_db() as db:
+        cursor = await db.execute("""
+            SELECT * FROM application_history
+            WHERE application_id = ?
+            ORDER BY changed_at ASC;
+        """, (app_id,))
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+
+# ==========================================
+# Career Alert Settings & Reports
+# ==========================================
+
+async def get_career_alert_settings(settings_id: str = "default") -> Dict[str, Any]:
+    """Retrieves daily job alert configuration."""
+    async with get_db() as db:
+        cursor = await db.execute("SELECT * FROM career_alert_settings WHERE id = ? LIMIT 1;", (settings_id,))
+        row = await cursor.fetchone()
+        if not row:
+            return {
+                "id": settings_id,
+                "enabled": True,
+                "daily_time": "08:00",
+                "timezone": "Asia/Kolkata",
+                "categories": ["AI Engineer", "Generative AI Engineer", "Data Scientist", "Python Developer"],
+                "locations": ["Remote", "India", "Bengaluru", "Delhi NCR"],
+                "min_score": 65,
+                "sources": ["LinkedIn", "Wellfound", "Indeed", "RemoteOK", "Internshala"],
+                "channels": ["dashboard", "email"],
+                "last_run": None,
+                "next_run": None,
+                "updated_at": datetime.now().isoformat()
+            }
+        d = dict(row)
+        d["enabled"] = bool(d.get("enabled", 1))
+        for fld in ["categories", "locations", "sources", "channels"]:
+            try:
+                d[fld] = json.loads(d.get(f"{fld}_json") or "[]")
+            except Exception:
+                d[fld] = []
+        return d
+
+async def save_career_alert_settings(s: Dict[str, Any], settings_id: str = "default") -> Dict[str, Any]:
+    """Saves daily job alert settings."""
+    now_iso = datetime.now().isoformat()
+    sid = s.get("id") or settings_id
+    async with get_db() as db:
+        await db.execute("""
+            INSERT INTO career_alert_settings (
+                id, enabled, daily_time, timezone, categories_json,
+                locations_json, min_score, sources_json, channels_json,
+                last_run, next_run, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                enabled = excluded.enabled,
+                daily_time = excluded.daily_time,
+                timezone = excluded.timezone,
+                categories_json = excluded.categories_json,
+                locations_json = excluded.locations_json,
+                min_score = excluded.min_score,
+                sources_json = excluded.sources_json,
+                channels_json = excluded.channels_json,
+                last_run = excluded.last_run,
+                next_run = excluded.next_run,
+                updated_at = excluded.updated_at;
+        """, (
+            sid,
+            1 if s.get("enabled", True) else 0,
+            s.get("daily_time", "08:00"),
+            s.get("timezone", "Asia/Kolkata"),
+            json.dumps(s.get("categories", [])),
+            json.dumps(s.get("locations", [])),
+            s.get("min_score", 65),
+            json.dumps(s.get("sources", [])),
+            json.dumps(s.get("channels", [])),
+            s.get("last_run"),
+            s.get("next_run"),
+            now_iso
+        ))
+        await db.commit()
+    return await get_career_alert_settings(sid)
+
+async def save_career_report(rep: Dict[str, Any]) -> Dict[str, Any]:
+    """Saves a career report."""
+    rid = rep.get("id") or f"crep_{uuid.uuid4().hex[:10]}"
+    now_iso = datetime.now().isoformat()
+    async with get_db() as db:
+        await db.execute("""
+            INSERT INTO career_reports (
+                id, report_type, title, summary, file_paths_json, metrics_json, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (
+            rid,
+            rep.get("report_type", "daily_discovery"),
+            rep.get("title", "Career Report"),
+            rep.get("summary", ""),
+            json.dumps(rep.get("file_paths", [])),
+            json.dumps(rep.get("metrics", {})),
+            now_iso
+        ))
+        await db.commit()
+    return await get_career_report_by_id(rid)
+
+async def list_career_reports(limit: int = 50) -> List[Dict[str, Any]]:
+    """Lists saved career reports."""
+    async with get_db() as db:
+        cursor = await db.execute("SELECT * FROM career_reports ORDER BY created_at DESC LIMIT ?;", (limit,))
+        rows = await cursor.fetchall()
+        reps = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["file_paths"] = json.loads(d.get("file_paths_json") or "[]")
+            except Exception:
+                d["file_paths"] = []
+            try:
+                d["metrics"] = json.loads(d.get("metrics_json") or "{}")
+            except Exception:
+                d["metrics"] = {}
+            reps.append(d)
+        return reps
+
+async def get_career_report_by_id(report_id: str) -> Optional[Dict[str, Any]]:
+    """Retrieves single career report."""
+    async with get_db() as db:
+        cursor = await db.execute("SELECT * FROM career_reports WHERE id = ? LIMIT 1;", (report_id,))
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        try:
+            d["file_paths"] = json.loads(d.get("file_paths_json") or "[]")
+        except Exception:
+            d["file_paths"] = []
+        try:
+            d["metrics"] = json.loads(d.get("metrics_json") or "{}")
+        except Exception:
+            d["metrics"] = {}
+        return d
+
+
+# ==========================================
+# Career Dashboard KPIs & Analytics
+# ==========================================
+
+async def get_career_dashboard_kpis() -> Dict[str, Any]:
+    """Computes comprehensive KPIs for Career Dashboard."""
+    async with get_db() as db:
+        # Profile completeness
+        p_cur = await db.execute("SELECT completeness_score FROM career_profiles WHERE id = 'default' LIMIT 1;")
+        p_row = await p_cur.fetchone()
+        profile_score = p_row[0] if p_row else 0
+
+        # Total jobs discovered
+        j_cur = await db.execute("SELECT COUNT(*) FROM job_listings;")
+        jobs_count = (await j_cur.fetchone())[0]
+
+        # Best matches & average score
+        m_cur = await db.execute("SELECT AVG(overall_score), MAX(overall_score) FROM job_matches;")
+        m_row = await m_cur.fetchone()
+        avg_match = round(m_row[0] or 0, 1) if m_row else 0
+        max_match = round(m_row[1] or 0, 1) if m_row else 0
+
+        # Application stats by status
+        a_cur = await db.execute("""
+            SELECT status, COUNT(*) FROM job_applications GROUP BY status;
+        """)
+        a_rows = await a_cur.fetchall()
+        status_counts = {r[0]: r[1] for r in a_rows}
+
+        total_apps = sum(status_counts.values())
+        applied_count = status_counts.get("applied", 0) + status_counts.get("interview", 0) + status_counts.get("offer", 0) + status_counts.get("assessment", 0)
+        interview_count = status_counts.get("interview", 0)
+        offer_count = status_counts.get("offer", 0)
+        rejected_count = status_counts.get("rejected", 0)
+        saved_count = status_counts.get("saved", 0) + status_counts.get("interested", 0) + status_counts.get("preparing", 0) + status_counts.get("ready_to_apply", 0)
+
+        # Recent activities (last 5 applications or matches)
+        rec_cur = await db.execute("""
+            SELECT 'application' as type, company as title, status as subtitle, updated_at as timestamp
+            FROM job_applications
+            ORDER BY updated_at DESC LIMIT 5;
+        """)
+        recent_activity = [dict(r) for r in await rec_cur.fetchall()]
+
+        # Top 5 matching jobs
+        top_matches_cur = await db.execute("""
+            SELECT j.id, j.title, j.company, j.location, j.salary, j.workplace_type, j.source, j.original_url,
+                   COALESCE(m.overall_score, 0) as match_score
+            FROM job_listings j
+            LEFT JOIN job_matches m ON j.id = m.job_id
+            ORDER BY match_score DESC, j.discovered_at DESC LIMIT 5;
+        """)
+        top_matches = [dict(r) for r in await top_matches_cur.fetchall()]
+
+        return {
+            "profile_completeness": profile_score,
+            "total_jobs_discovered": jobs_count,
+            "average_match_score": avg_match,
+            "highest_match_score": max_match,
+            "applications": {
+                "total": total_apps,
+                "saved": saved_count,
+                "applied": applied_count,
+                "interview": interview_count,
+                "offer": offer_count,
+                "rejected": rejected_count,
+                "by_status": status_counts
+            },
+            "recent_activity": recent_activity,
+            "top_job_matches": top_matches
+        }

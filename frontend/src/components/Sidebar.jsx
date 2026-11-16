@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { 
   Bot, 
   Sparkles, 
+  Briefcase,
   Layers, 
   BarChart3, 
   Calendar, 
@@ -25,6 +26,7 @@ export default function Sidebar({
 }) {
 
   const navItems = [
+    { id: 'career', label: 'Career AI Agent', icon: Briefcase, badge: 'v3.0', description: 'Jobs, ATS & Applications' },
     { id: 'workflows', label: 'Create Workflow', icon: Sparkles, badge: 'Main', description: 'Natural Language Builder' },
     { id: 'dashboard', label: 'Dashboard', icon: BarChart3, description: 'Overview & Metrics' },
     { id: 'history', label: 'My Workflows', icon: History, description: 'Saved & Re-run History' },
@@ -44,7 +46,7 @@ export default function Sidebar({
       {/* Brand Header */}
       <div className="h-16 flex items-center justify-between px-4 border-b border-white/10">
         <div 
-          onClick={() => setActiveTab('workflows')}
+          onClick={() => setActiveTab('career')}
           className="flex items-center gap-3 cursor-pointer overflow-hidden group"
         >
           <div className="relative flex-shrink-0 flex items-center justify-center w-10 h-10 rounded-xl bg-gradient-to-tr from-cyan-500 to-violet-600 shadow-glow-cyan">
@@ -59,9 +61,9 @@ export default function Sidebar({
             <div className="min-w-0 transition-opacity duration-200">
               <div className="flex items-center gap-1.5">
                 <span className="text-base font-bold font-display tracking-tight text-white">Agent<span className="text-cyan-400">Flow</span></span>
-                <span className="text-[9px] px-1.5 py-0.2 rounded-full bg-cyan-500/15 text-cyan-300 border border-cyan-500/30 font-mono">v2.0</span>
+                <span className="text-[9px] px-1.5 py-0.2 rounded-full bg-cyan-500/15 text-cyan-300 border border-cyan-500/30 font-mono font-semibold">v3.0</span>
               </div>
-              <p className="text-[10px] text-slate-400 truncate">100% Local AI Assistant</p>
+              <p className="text-[10px] text-slate-400 truncate">Intelligent AI Career Assistant</p>
             </div>
           )}
         </div>
