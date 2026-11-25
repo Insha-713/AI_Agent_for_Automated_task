@@ -25,7 +25,7 @@ import {
 } from 'lucide-react';
 import { getApiUrl } from '../api/config';
 
-export default function HistoryPage() {
+export default function HistoryPage({ onNavigate = () => {} }) {
   const [runs, setRuns] = useState([]);
   const [totalRuns, setTotalRuns] = useState(0);
   const [page, setPage] = useState(1);
@@ -187,9 +187,17 @@ export default function HistoryPage() {
               {totalRuns} run{totalRuns !== 1 ? 's' : ''} stored
             </span>
           </div>
-          <p className="text-xs text-slate-400 mt-1">
+          <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
             Permanent audit trail of executed workflows, step outputs, approval decisions, and generated artifacts.
           </p>
+          <button
+            type="button"
+            onClick={() => onNavigate('help')}
+            className="text-xs text-cyan-600 dark:text-cyan-400 hover:underline flex items-center gap-1 mt-1 font-medium"
+          >
+            <span>Learn how to use this feature</span>
+            <ExternalLink className="w-3 h-3" />
+          </button>
         </div>
 
         <button

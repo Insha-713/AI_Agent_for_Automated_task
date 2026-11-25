@@ -53,6 +53,12 @@ from backend.tools import (
     score_resume_ats,
     generate_resume_improvements,
     generate_cover_letter,
+    generate_social_post_tool,
+    draft_linkedin_post,
+    trigger_instagram_dm,
+    send_whatsapp_message,
+    schedule_ai_call,
+    research_topic,
     WORKSPACE_PATH,
     _safe_workspace_path,
 )
@@ -249,6 +255,54 @@ REGISTERED_TOOLS_META = {
         "requires_approval": False,
         "required_credentials": [],
         "func": generate_cover_letter.func if hasattr(generate_cover_letter, "func") else generate_cover_letter,
+    },
+    "generate_social_post_tool": {
+        "display_name": "Generate Social Media Content",
+        "description": "Generates engaging social media content with hashtags, captions, and optimal posting times for LinkedIn or Instagram.",
+        "params": {"topic": "str", "platform": "str", "tone": "str"},
+        "requires_approval": False,
+        "required_credentials": [],
+        "func": generate_social_post_tool.func if hasattr(generate_social_post_tool, "func") else generate_social_post_tool,
+    },
+    "draft_linkedin_post": {
+        "display_name": "Draft LinkedIn Post",
+        "description": "Drafts professional LinkedIn posts (project showcase, achievement, or educational) with hashtags.",
+        "params": {"topic": "str", "post_type": "str", "tone": "str"},
+        "requires_approval": False,
+        "required_credentials": [],
+        "func": draft_linkedin_post.func if hasattr(draft_linkedin_post, "func") else draft_linkedin_post,
+    },
+    "trigger_instagram_dm": {
+        "display_name": "Trigger Instagram Comment-to-DM Response",
+        "description": "Sends or records a private Instagram DM response with resource link when a trigger keyword is commented.",
+        "params": {"keyword": "str", "recipient_username": "str", "resource_url": "str"},
+        "requires_approval": True,
+        "required_credentials": ["INSTAGRAM_ACCESS_TOKEN"],
+        "func": trigger_instagram_dm.func if hasattr(trigger_instagram_dm, "func") else trigger_instagram_dm,
+    },
+    "send_whatsapp_message": {
+        "display_name": "Send WhatsApp Business Message",
+        "description": "Sends an authorized message or keyword auto-response via WhatsApp Business Cloud API.",
+        "params": {"recipient_phone": "str", "message": "str"},
+        "requires_approval": True,
+        "required_credentials": ["WHATSAPP_TOKEN"],
+        "func": send_whatsapp_message.func if hasattr(send_whatsapp_message, "func") else send_whatsapp_message,
+    },
+    "schedule_ai_call": {
+        "display_name": "Schedule Outgoing AI Phone Call",
+        "description": "Schedules an AI phone call task with speech prompt and captures conversation summary. Requires explicit human approval.",
+        "params": {"recipient_phone": "str", "purpose": "str", "prompt_script": "str"},
+        "requires_approval": True,
+        "required_credentials": ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_PHONE_NUMBER"],
+        "func": schedule_ai_call.func if hasattr(schedule_ai_call, "func") else schedule_ai_call,
+    },
+    "research_topic": {
+        "display_name": "Deep Topic Research & Synthesis",
+        "description": "Conducts multi-source research on a topic, providing verified source citations and multilingual summary in English, Hindi, or Urdu.",
+        "params": {"topic": "str", "target_platform": "str", "language": "str"},
+        "requires_approval": False,
+        "required_credentials": [],
+        "func": research_topic.func if hasattr(research_topic, "func") else research_topic,
     },
 }
 
@@ -958,6 +1012,115 @@ def generate_fallback_plan(prompt: str) -> Dict[str, Any]:
             "title": "Resume & Job Application Assistant",
             "description": "Parses resume (PDF/DOCX), evaluates ATS score (out of 100), extracts keyword gaps, crafts improved resume & tailored cover letter without inventing facts, and emails the complete report.",
             "steps": steps
+        }
+
+    # 2. LinkedIn Post Creation Workflow
+    if any(w in p_lower for w in ["linkedin", "linkedin post", "showcase project", "achievement announcement"]):
+        topic = prompt.replace("create linkedin post about", "").replace("draft linkedin post on", "").replace("linkedin", "").strip() or "AI Agent Engineering"
+        return {
+            "title": "LinkedIn Professional Post Creator",
+            "description": f"Drafts tailored, professional LinkedIn content for '{topic}' with optimal hashtags and saves to workspace.",
+            "steps": [
+                {
+                    "id": "step_1",
+                    "tool": "draft_linkedin_post",
+                    "name": "Draft Professional LinkedIn Post",
+                    "params": {"topic": topic, "post_type": "project_showcase", "tone": "professional"},
+                    "output_key": "linkedin_draft",
+                    "requires_approval": False,
+                    "required_credentials": []
+                },
+                {
+                    "id": "step_2",
+                    "tool": "save_file",
+                    "name": "Save Post Draft to workspace/linkedin_draft.txt",
+                    "params": {"filename": "linkedin_draft.txt", "content": "{{step_1_output}}", "overwrite": True},
+                    "output_key": "saved_file",
+                    "requires_approval": False,
+                    "required_credentials": []
+                }
+            ]
+        }
+
+    # 3. Social Media Multi-Platform Post Workflow
+    if any(w in p_lower for w in ["social media", "instagram post", "reel caption", "content calendar", "posts about"]):
+        topic = prompt.replace("create social media posts about", "").replace("social media", "").strip() or "Generative AI and Python"
+        return {
+            "title": "Social Media Content Studio",
+            "description": f"Generates engaging multi-platform social media posts with hashtags for '{topic}'.",
+            "steps": [
+                {
+                    "id": "step_1",
+                    "tool": "generate_social_post_tool",
+                    "name": "Generate Social Media Content & Hashtags",
+                    "params": {"topic": topic, "platform": "linkedin", "tone": "professional"},
+                    "output_key": "social_post_draft",
+                    "requires_approval": False,
+                    "required_credentials": []
+                },
+                {
+                    "id": "step_2",
+                    "tool": "save_file",
+                    "name": "Save Content to workspace/social_content.txt",
+                    "params": {"filename": "social_content.txt", "content": "{{step_1_output}}", "overwrite": True},
+                    "output_key": "saved_social_file",
+                    "requires_approval": False,
+                    "required_credentials": []
+                }
+            ]
+        }
+
+    # 4. AI Calling Agent Workflow
+    if any(w in p_lower for w in ["schedule call", "phone call", "call tomorrow", "voice call", "call to confirm"]):
+        phone_match = re.search(r"(\+?\d{10,14})", prompt)
+        phone = phone_match.group(1) if phone_match else "+919876543210"
+        return {
+            "title": "AI Voice Calling Assistant",
+            "description": f"Schedules an AI phone call to {phone} with human approval gate.",
+            "steps": [
+                {
+                    "id": "step_1",
+                    "tool": "schedule_ai_call",
+                    "name": f"Schedule AI Voice Call to {phone}",
+                    "params": {
+                        "recipient_phone": phone,
+                        "purpose": prompt[:80],
+                        "prompt_script": f"Hello, calling from AgentFlow AI Assistant on behalf of Insha Fatima regarding: {prompt[:60]}."
+                    },
+                    "output_key": "call_task_details",
+                    "requires_approval": True,
+                    "required_credentials": ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_PHONE_NUMBER"]
+                }
+            ]
+        }
+
+    # 5. Deep Research & Content Creation Workflow
+    if any(w in p_lower for w in ["deep research", "research paper", "research on", "tahqeeq", "anusandhan"]):
+        lang = "hi" if any(w in p_lower for w in ["hindi", "हिन्दी"]) else ("ur" if any(w in p_lower for w in ["urdu", "اردو"]) else "en")
+        topic = prompt.replace("deep research on", "").replace("research", "").strip() or "Autonomous AI Agents"
+        return {
+            "title": "AI Research & Synthesis Dossier",
+            "description": f"Conducts multi-source research on '{topic}' and produces a sourced report.",
+            "steps": [
+                {
+                    "id": "step_1",
+                    "tool": "research_topic",
+                    "name": f"Synthesize Research on '{topic[:40]}'",
+                    "params": {"topic": topic, "target_platform": "article", "language": lang},
+                    "output_key": "research_dossier",
+                    "requires_approval": False,
+                    "required_credentials": []
+                },
+                {
+                    "id": "step_2",
+                    "tool": "save_file",
+                    "name": "Save Research Report to workspace/research_report.md",
+                    "params": {"filename": "research_report.md", "content": "{{step_1_output}}", "overwrite": True},
+                    "output_key": "saved_research",
+                    "requires_approval": False,
+                    "required_credentials": []
+                }
+            ]
         }
 
     # Check for weather request

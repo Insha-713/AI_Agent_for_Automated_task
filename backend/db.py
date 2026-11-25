@@ -701,6 +701,230 @@ async def init_db():
             );
         """)
 
+        # 24. Social Media Posts table (Content Studio & Calendar)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS social_posts (
+                id TEXT PRIMARY KEY,
+                platform TEXT NOT NULL,
+                post_type TEXT DEFAULT 'post',
+                content TEXT NOT NULL,
+                caption TEXT DEFAULT '',
+                hashtags_json TEXT DEFAULT '[]',
+                media_urls_json TEXT DEFAULT '[]',
+                status TEXT NOT NULL DEFAULT 'draft',
+                scheduled_for TEXT,
+                published_at TEXT,
+                external_post_id TEXT DEFAULT '',
+                metrics_json TEXT DEFAULT '{}',
+                error_message TEXT DEFAULT '',
+                timezone TEXT DEFAULT 'Asia/Kolkata',
+                frequency TEXT DEFAULT 'one_time',
+                start_date TEXT DEFAULT '',
+                end_date TEXT DEFAULT '',
+                approval_required INTEGER DEFAULT 0,
+                approved_at TEXT DEFAULT '',
+                auto_publish INTEGER DEFAULT 0,
+                next_run_at TEXT DEFAULT '',
+                last_attempt_at TEXT DEFAULT '',
+                publish_attempts INTEGER DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+        """)
+        for col_def in [
+            "timezone TEXT DEFAULT 'Asia/Kolkata'",
+            "frequency TEXT DEFAULT 'one_time'",
+            "start_date TEXT DEFAULT ''",
+            "end_date TEXT DEFAULT ''",
+            "approval_required INTEGER DEFAULT 0",
+            "approved_at TEXT DEFAULT ''",
+            "auto_publish INTEGER DEFAULT 0",
+            "next_run_at TEXT DEFAULT ''",
+            "last_attempt_at TEXT DEFAULT ''",
+            "publish_attempts INTEGER DEFAULT 0",
+        ]:
+            try:
+                await db.execute(f"ALTER TABLE social_posts ADD COLUMN {col_def};")
+            except Exception:
+                pass
+
+        # 25. Instagram Automation Rules (Comment-to-DM)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS instagram_automation_rules (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                keyword TEXT NOT NULL,
+                match_type TEXT NOT NULL DEFAULT 'contains',
+                post_id TEXT DEFAULT 'any',
+                action_type TEXT NOT NULL DEFAULT 'dm_link',
+                response_message TEXT NOT NULL,
+                resource_url TEXT DEFAULT '',
+                is_active INTEGER DEFAULT 1,
+                trigger_count INTEGER DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+        """)
+
+        # 26. Instagram Interactions Log
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS instagram_interactions (
+                id TEXT PRIMARY KEY,
+                rule_id TEXT DEFAULT '',
+                keyword_matched TEXT DEFAULT '',
+                commenter_id TEXT DEFAULT '',
+                commenter_username TEXT DEFAULT '',
+                comment_text TEXT DEFAULT '',
+                comment_id TEXT DEFAULT '',
+                media_id TEXT DEFAULT '',
+                response_status TEXT NOT NULL DEFAULT 'sent',
+                response_sent TEXT DEFAULT '',
+                error_message TEXT DEFAULT '',
+                timestamp TEXT NOT NULL,
+                is_simulation INTEGER DEFAULT 0
+            );
+        """)
+
+        # 27. WhatsApp Automation Rules
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS whatsapp_automation_rules (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                keyword TEXT NOT NULL,
+                match_type TEXT NOT NULL DEFAULT 'exact',
+                response_message TEXT NOT NULL,
+                resource_url TEXT DEFAULT '',
+                is_active INTEGER DEFAULT 1,
+                trigger_count INTEGER DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+        """)
+
+        # 28. WhatsApp Conversations / Messages Log
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS whatsapp_conversations (
+                id TEXT PRIMARY KEY,
+                contact_phone TEXT NOT NULL,
+                contact_name TEXT DEFAULT '',
+                direction TEXT NOT NULL DEFAULT 'inbound',
+                message_body TEXT NOT NULL,
+                message_id TEXT DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'received',
+                error_message TEXT DEFAULT '',
+                timestamp TEXT NOT NULL,
+                is_simulation INTEGER DEFAULT 0
+            );
+        """)
+
+        # 29. AI Voice & Calling Tasks table
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS call_tasks (
+                id TEXT PRIMARY KEY,
+                recipient_phone TEXT NOT NULL,
+                recipient_name TEXT DEFAULT '',
+                direction TEXT NOT NULL DEFAULT 'outbound',
+                purpose TEXT NOT NULL,
+                prompt_script TEXT NOT NULL,
+                scheduled_time TEXT,
+                status TEXT NOT NULL DEFAULT 'pending_approval',
+                approval_id TEXT DEFAULT '',
+                call_sid TEXT DEFAULT '',
+                duration_seconds INTEGER DEFAULT 0,
+                transcript TEXT DEFAULT '',
+                summary TEXT DEFAULT '',
+                outcome TEXT DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                is_simulation INTEGER DEFAULT 0
+            );
+        """)
+
+        # Migrations to ensure is_simulation exists on tables
+        for _sim_tbl in ("instagram_interactions", "whatsapp_conversations", "call_tasks"):
+            try:
+                await db.execute(f"ALTER TABLE {_sim_tbl} ADD COLUMN is_simulation INTEGER DEFAULT 0;")
+            except Exception:
+                pass
+
+        # 30. Email Tasks table
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS email_tasks (
+                id TEXT PRIMARY KEY,
+                to_email TEXT NOT NULL,
+                subject TEXT NOT NULL,
+                body TEXT NOT NULL,
+                category TEXT DEFAULT 'custom',
+                status TEXT NOT NULL DEFAULT 'draft',
+                approval_id TEXT DEFAULT '',
+                provider TEXT DEFAULT '',
+                message_id TEXT DEFAULT '',
+                error_message TEXT DEFAULT '',
+                created_at TEXT NOT NULL,
+                sent_at TEXT
+            );
+        """)
+
+        # 31. Research & Content Documents table
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS research_documents (
+                id TEXT PRIMARY KEY,
+                topic TEXT NOT NULL,
+                target_platform TEXT DEFAULT 'article',
+                tone TEXT DEFAULT 'informative',
+                language TEXT DEFAULT 'en',
+                summary TEXT DEFAULT '',
+                content_md TEXT NOT NULL,
+                sources_json TEXT DEFAULT '[]',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+        """)
+
+        # 32. Central AI Memory table
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS central_ai_memory (
+                id TEXT PRIMARY KEY,
+                category TEXT NOT NULL DEFAULT 'general',
+                key TEXT NOT NULL,
+                value_json TEXT NOT NULL DEFAULT '{}',
+                description TEXT DEFAULT '',
+                updated_at TEXT NOT NULL
+            );
+        """)
+
+        # 33. Automation Rules (Central WHEN/THEN Engine)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS automation_rules (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                trigger_type TEXT NOT NULL,
+                trigger_config_json TEXT DEFAULT '{}',
+                condition_config_json TEXT DEFAULT '{}',
+                action_type TEXT NOT NULL,
+                action_config_json TEXT DEFAULT '{}',
+                requires_approval INTEGER DEFAULT 1,
+                is_enabled INTEGER DEFAULT 1,
+                last_run_at TEXT,
+                run_count INTEGER DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+        """)
+
+        # 34. Automation Rule Execution Logs
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS automation_rule_logs (
+                id TEXT PRIMARY KEY,
+                rule_id TEXT NOT NULL,
+                trigger_event_json TEXT DEFAULT '{}',
+                action_taken_json TEXT DEFAULT '{}',
+                status TEXT NOT NULL DEFAULT 'success',
+                details TEXT DEFAULT '',
+                created_at TEXT NOT NULL
+            );
+        """)
+
         await db.commit()
 
         # Seed default monitors if none exist
@@ -719,6 +943,38 @@ async def init_db():
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, m)
             await db.commit()
+
+        # Instagram automation rules start empty for clean slate user configuration
+        # WhatsApp automation rules start empty for clean slate user configuration
+
+        # Seed default Central AI Memory items (generic professional preferences)
+        cursor = await db.execute("SELECT COUNT(*) FROM central_ai_memory;")
+        count_res = await cursor.fetchone()
+        if count_res and count_res[0] == 0:
+            mem_items = [
+                ("mem_writing_style", "preferences", "writing_style", json.dumps({"tone": "Professional, confident, clear, and analytical", "emphasis": "Measurable results, verified technologies, and robust engineering architecture", "prohibited": "Fabricated experience, unearned titles, or non-functional buzzwords"}), "Default tone guidelines for social posts, emails, and cover letters", now_iso),
+                ("mem_language_support", "preferences", "supported_languages", json.dumps(["en", "hi", "ur"]), "Primary English, with natural translation and recognition for Hindi and Urdu", now_iso)
+            ]
+            for m in mem_items:
+                await db.execute("""
+                    INSERT INTO central_ai_memory (id, category, key, value_json, description, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, m)
+
+        # Seed default Automation Rules (Central WHEN/THEN Engine)
+        cursor = await db.execute("SELECT COUNT(*) FROM automation_rules;")
+        count_res = await cursor.fetchone()
+        if count_res and count_res[0] == 0:
+            auto_rules = [
+                ("rule_when_job_matched", "When AI Job Match >= 70% -> Send Email Notification", "job_discovered", json.dumps({"category": "AI Engineer"}), json.dumps({"min_score": 70}), "send_email", json.dumps({"subject": "High-Match AI Job Opportunity Discovered"}), 0, 1, None, 0, now_iso, now_iso),
+                ("rule_when_morning_digest", "Daily 8 AM IST -> Scan Jobs & Compile Daily Digest", "schedule", json.dumps({"cron": "0 8 * * *", "timezone": "Asia/Kolkata"}), json.dumps({}), "generate_report", json.dumps({"report_type": "daily_job_digest"}), 0, 1, None, 0, now_iso, now_iso)
+            ]
+            for ar in auto_rules:
+                await db.execute("""
+                    INSERT INTO automation_rules (id, name, trigger_type, trigger_config_json, condition_config_json, action_type, action_config_json, requires_approval, is_enabled, last_run_at, run_count, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, ar)
+        await db.commit()
 
         cursor = await db.execute("SELECT COUNT(*) FROM templates;")
         count_res = await cursor.fetchone()
@@ -1043,9 +1299,13 @@ async def record_schedule_execution_result(
     schedule_id: str,
     status: str,
     error_message: str = "",
-    next_run: Optional[str] = None
+    next_run: Optional[str] = None,
+    last_run: Optional[str] = None,
+    error_msg: Optional[str] = None,
+    **kwargs
 ):
-    now_str = datetime.now().isoformat()
+    now_str = last_run or datetime.now().isoformat()
+    err_str = error_msg if error_msg is not None else error_message
     async with get_db() as db:
         if status == "success":
             await db.execute("""
@@ -1058,7 +1318,7 @@ async def record_schedule_execution_result(
                 UPDATE schedules
                 SET last_run = ?, next_run = ?, last_status = 'failed', consecutive_failures = consecutive_failures + 1, last_error = ?
                 WHERE id = ?
-            """, (now_str, next_run, error_message, schedule_id))
+            """, (now_str, next_run, err_str, schedule_id))
         await db.commit()
 
 async def list_schedules_from_db() -> List[Dict[str, Any]]:
@@ -2948,3 +3208,1098 @@ async def get_career_dashboard_kpis() -> Dict[str, Any]:
             "recent_activity": recent_activity,
             "top_job_matches": top_matches
         }
+
+
+# =====================================================================
+# AGENTFLOW V3.0 UNIFIED PLATFORM AGENTS CRUD HELPERS
+# =====================================================================
+
+async def save_approval(approval_dict: Dict[str, Any]) -> Dict[str, Any]:
+    """Helper wrapper around create_approval_record accepting a dict."""
+    appr_id = approval_dict.get("id") or f"appr_{uuid.uuid4().hex[:8]}"
+    await create_approval_record(
+        approval_id=appr_id,
+        task_id=approval_dict.get("task_id", approval_dict.get("workflow_id", "platform")),
+        action_type=approval_dict.get("action_type", approval_dict.get("tool_name", "action")),
+        tool_name=approval_dict.get("tool_name", "action"),
+        parameters=approval_dict.get("parameters", {}),
+        details=approval_dict.get("details", ""),
+        run_id=approval_dict.get("run_id", ""),
+        step_id=approval_dict.get("step_id", ""),
+        workflow_id=approval_dict.get("workflow_id", "")
+    )
+    approval_dict["id"] = appr_id
+    return approval_dict
+
+# 1. Social Media Posts
+def _unpack_social_post(d: Dict[str, Any]) -> Dict[str, Any]:
+    hashtags = d.get("hashtags_json")
+    if isinstance(hashtags, str):
+        try:
+            d["hashtags"] = json.loads(hashtags or "[]")
+        except Exception:
+            d["hashtags"] = []
+    elif not isinstance(d.get("hashtags"), list):
+        d["hashtags"] = []
+
+    media_urls = d.get("media_urls_json")
+    if isinstance(media_urls, str):
+        try:
+            d["media_urls"] = json.loads(media_urls or "[]")
+        except Exception:
+            d["media_urls"] = []
+    elif not isinstance(d.get("media_urls"), list):
+        d["media_urls"] = []
+
+    metrics = d.get("metrics_json")
+    if isinstance(metrics, str):
+        try:
+            d["metrics"] = json.loads(metrics or "{}")
+        except Exception:
+            d["metrics"] = {}
+    elif not isinstance(d.get("metrics"), dict):
+        d["metrics"] = {}
+
+    d["approval_required"] = bool(d.get("approval_required"))
+    d["auto_publish"] = bool(d.get("auto_publish"))
+    d["publish_attempts"] = int(d.get("publish_attempts") or 0)
+    d["timezone"] = d.get("timezone") or "Asia/Kolkata"
+    d["frequency"] = d.get("frequency") or "one_time"
+    d["start_date"] = d.get("start_date") or ""
+    d["end_date"] = d.get("end_date") or ""
+    d["approved_at"] = d.get("approved_at") or ""
+    d["last_attempt_at"] = d.get("last_attempt_at") or ""
+    d["next_run_at"] = d.get("next_run_at") or d.get("scheduled_for") or ""
+    return d
+
+async def save_social_post(post: Dict[str, Any]) -> Dict[str, Any]:
+    post_id = post.get("id") or f"post_{uuid.uuid4().hex[:10]}"
+    now_iso = datetime.now().isoformat()
+    scheduled_for = post.get("scheduled_for") or post.get("next_run_at")
+    next_run_at = post.get("next_run_at") or scheduled_for or ""
+    timezone_name = post.get("timezone") or "Asia/Kolkata"
+    frequency = post.get("frequency") or "one_time"
+    start_date = post.get("start_date") or ""
+    end_date = post.get("end_date") or ""
+    approval_required = 1 if post.get("approval_required") else 0
+    approved_at = post.get("approved_at") or ""
+    auto_publish = 1 if post.get("auto_publish") else 0
+    publish_attempts = int(post.get("publish_attempts") or 0)
+    last_attempt_at = post.get("last_attempt_at") or ""
+
+    # Normalize hashtags
+    raw_ht = post.get("hashtags", [])
+    if isinstance(raw_ht, str):
+        raw_ht = [h.strip() for h in raw_ht.split() if h.strip()]
+    elif not isinstance(raw_ht, list):
+        raw_ht = []
+
+    async with get_db() as db:
+        await db.execute("""
+            INSERT INTO social_posts (
+                id, platform, post_type, content, caption, hashtags_json, media_urls_json,
+                status, scheduled_for, published_at, external_post_id, metrics_json,
+                error_message, timezone, frequency, start_date, end_date, approval_required,
+                approved_at, auto_publish, next_run_at, last_attempt_at, publish_attempts,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                platform = excluded.platform,
+                post_type = excluded.post_type,
+                content = excluded.content,
+                caption = excluded.caption,
+                hashtags_json = excluded.hashtags_json,
+                media_urls_json = excluded.media_urls_json,
+                status = excluded.status,
+                scheduled_for = excluded.scheduled_for,
+                published_at = excluded.published_at,
+                external_post_id = excluded.external_post_id,
+                metrics_json = excluded.metrics_json,
+                error_message = excluded.error_message,
+                timezone = excluded.timezone,
+                frequency = excluded.frequency,
+                start_date = excluded.start_date,
+                end_date = excluded.end_date,
+                approval_required = excluded.approval_required,
+                approved_at = excluded.approved_at,
+                auto_publish = excluded.auto_publish,
+                next_run_at = excluded.next_run_at,
+                last_attempt_at = excluded.last_attempt_at,
+                publish_attempts = excluded.publish_attempts,
+                updated_at = excluded.updated_at;
+        """, (
+            post_id,
+            post.get("platform", "linkedin"),
+            post.get("post_type", "post"),
+            post.get("content", ""),
+            post.get("caption", ""),
+            json.dumps(raw_ht),
+            json.dumps(post.get("media_urls", []) if isinstance(post.get("media_urls"), list) else []),
+            post.get("status", "draft"),
+            scheduled_for,
+            post.get("published_at"),
+            post.get("external_post_id", ""),
+            json.dumps(post.get("metrics", {}) if isinstance(post.get("metrics"), dict) else {}),
+            post.get("error_message", ""),
+            timezone_name,
+            frequency,
+            start_date,
+            end_date,
+            approval_required,
+            approved_at,
+            auto_publish,
+            next_run_at,
+            last_attempt_at,
+            publish_attempts,
+            post.get("created_at") or now_iso,
+            now_iso
+        ))
+        await db.commit()
+    return await get_social_post_by_id(post_id)
+
+async def get_social_post_by_id(post_id: str) -> Optional[Dict[str, Any]]:
+    async with get_db() as db:
+        cursor = await db.execute("SELECT * FROM social_posts WHERE id = ? LIMIT 1;", (post_id,))
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        return _unpack_social_post(dict(row))
+
+async def list_social_posts(platform: Optional[str] = None, status: Optional[str] = None, limit: int = 50) -> List[Dict[str, Any]]:
+    async with get_db() as db:
+        query = "SELECT * FROM social_posts WHERE 1=1"
+        params = []
+        if platform and platform != "all":
+            query += " AND platform = ?"
+            params.append(platform)
+        if status and status != "all":
+            query += " AND status = ?"
+            params.append(status)
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+        cursor = await db.execute(query, tuple(params))
+        rows = await cursor.fetchall()
+        return [_unpack_social_post(dict(r)) for r in rows]
+
+async def update_social_post_status(post_id: str, status: str, external_post_id: str = "", error_message: str = "", metrics: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    now_iso = datetime.now().isoformat()
+    async with get_db() as db:
+        query = "UPDATE social_posts SET status = ?, updated_at = ?"
+        params = [status, now_iso]
+        if status == "published":
+            query += ", published_at = ?"
+            params.append(now_iso)
+        if external_post_id:
+            query += ", external_post_id = ?"
+            params.append(external_post_id)
+        if error_message:
+            query += ", error_message = ?"
+            params.append(error_message)
+        if metrics:
+            query += ", metrics_json = ?"
+            params.append(json.dumps(metrics))
+        query += " WHERE id = ?"
+        params.append(post_id)
+        await db.execute(query, tuple(params))
+        await db.commit()
+    return await get_social_post_by_id(post_id)
+
+async def update_social_post_schedule(
+    post_id: str,
+    status: Optional[str] = None,
+    scheduled_for: Optional[str] = None,
+    next_run_at: Optional[str] = None,
+    approval_required: Optional[bool] = None,
+    approved_at: Optional[str] = None,
+    auto_publish: Optional[bool] = None,
+    frequency: Optional[str] = None,
+    timezone_name: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    error_message: Optional[str] = None,
+    external_post_id: Optional[str] = None,
+    content: Optional[str] = None,
+    hashtags: Optional[List[str]] = None
+) -> Optional[Dict[str, Any]]:
+    now_iso = datetime.now().isoformat()
+    async with get_db() as db:
+        sets = ["updated_at = ?"]
+        params = [now_iso]
+
+        if status is not None:
+            sets.append("status = ?")
+            params.append(status)
+            if status == "published":
+                sets.append("published_at = ?")
+                params.append(now_iso)
+        if scheduled_for is not None:
+            sets.append("scheduled_for = ?")
+            params.append(scheduled_for)
+        if next_run_at is not None:
+            sets.append("next_run_at = ?")
+            params.append(next_run_at)
+        if approval_required is not None:
+            sets.append("approval_required = ?")
+            params.append(1 if approval_required else 0)
+        if approved_at is not None:
+            sets.append("approved_at = ?")
+            params.append(approved_at)
+        if auto_publish is not None:
+            sets.append("auto_publish = ?")
+            params.append(1 if auto_publish else 0)
+        if frequency is not None:
+            sets.append("frequency = ?")
+            params.append(frequency)
+        if timezone_name is not None:
+            sets.append("timezone = ?")
+            params.append(timezone_name)
+        if start_date is not None:
+            sets.append("start_date = ?")
+            params.append(start_date)
+        if end_date is not None:
+            sets.append("end_date = ?")
+            params.append(end_date)
+        if error_message is not None:
+            sets.append("error_message = ?")
+            params.append(error_message)
+        if external_post_id is not None:
+            sets.append("external_post_id = ?")
+            params.append(external_post_id)
+        if content is not None:
+            sets.append("content = ?")
+            params.append(content)
+        if hashtags is not None:
+            sets.append("hashtags_json = ?")
+            params.append(json.dumps(hashtags))
+
+        query = f"UPDATE social_posts SET {', '.join(sets)} WHERE id = ?"
+        params.append(post_id)
+        await db.execute(query, tuple(params))
+        await db.commit()
+    return await get_social_post_by_id(post_id)
+
+async def claim_scheduled_social_post(post_id: str) -> bool:
+    """
+    Atomically transitions a scheduled post from 'scheduled' to 'publishing',
+    preventing concurrent workers or scheduler runs from executing the same post twice.
+    Returns True if successfully claimed, False otherwise.
+    """
+    now_iso = datetime.now().isoformat()
+    async with get_db() as db:
+        cursor = await db.execute("""
+            UPDATE social_posts
+            SET status = 'publishing',
+                publish_attempts = publish_attempts + 1,
+                last_attempt_at = ?,
+                updated_at = ?
+            WHERE id = ? AND status = 'scheduled' AND auto_publish = 1;
+        """, (now_iso, now_iso, post_id))
+        await db.commit()
+        return cursor.rowcount > 0
+
+async def delete_social_post(post_id: str) -> bool:
+    async with get_db() as db:
+        await db.execute("DELETE FROM social_posts WHERE id = ?;", (post_id,))
+        await db.commit()
+    return True
+
+
+# 2. Instagram Automation Rules & Interactions
+async def save_instagram_rule(rule: Dict[str, Any]) -> Dict[str, Any]:
+    rule_id = rule.get("id") or f"rule_ig_{uuid.uuid4().hex[:8]}"
+    now_iso = datetime.now().isoformat()
+    resp_msg = rule.get("response_message") or rule.get("reply_template") or ""
+    res_url = rule.get("resource_url") or rule.get("resource_link") or ""
+    async with get_db() as db:
+        await db.execute("""
+            INSERT INTO instagram_automation_rules (
+                id, name, keyword, match_type, post_id, action_type, response_message,
+                resource_url, is_active, trigger_count, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
+                keyword = excluded.keyword,
+                match_type = excluded.match_type,
+                post_id = excluded.post_id,
+                action_type = excluded.action_type,
+                response_message = excluded.response_message,
+                resource_url = excluded.resource_url,
+                is_active = excluded.is_active,
+                updated_at = excluded.updated_at;
+        """, (
+            rule_id,
+            rule.get("name", "Auto Reply Rule"),
+            rule.get("keyword", "").upper().strip(),
+            rule.get("match_type", "contains"),
+            rule.get("post_id", "any"),
+            rule.get("action_type", "dm_link"),
+            resp_msg,
+            res_url,
+            1 if rule.get("is_active", True) else 0,
+            rule.get("trigger_count", 0),
+            rule.get("created_at") or now_iso,
+            now_iso
+        ))
+        await db.commit()
+    return await get_instagram_rule_by_id(rule_id)
+
+async def get_instagram_rule_by_id(rule_id: str) -> Optional[Dict[str, Any]]:
+    async with get_db() as db:
+        cursor = await db.execute("SELECT * FROM instagram_automation_rules WHERE id = ? LIMIT 1;", (rule_id,))
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        d["reply_template"] = d.get("response_message", "")
+        d["resource_link"] = d.get("resource_url", "")
+        return d
+
+async def list_instagram_rules() -> List[Dict[str, Any]]:
+    async with get_db() as db:
+        cursor = await db.execute("SELECT * FROM instagram_automation_rules ORDER BY created_at DESC;")
+        rows = await cursor.fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            d["reply_template"] = d.get("response_message", "")
+            d["resource_link"] = d.get("resource_url", "")
+            result.append(d)
+        return result
+
+async def delete_instagram_rule(rule_id: str) -> bool:
+    async with get_db() as db:
+        await db.execute("DELETE FROM instagram_automation_rules WHERE id = ?;", (rule_id,))
+        await db.commit()
+    return True
+
+async def save_instagram_interaction(interaction: Dict[str, Any]) -> Dict[str, Any]:
+    inter_id = interaction.get("id") or f"ig_int_{uuid.uuid4().hex[:10]}"
+    now_iso = datetime.now().isoformat()
+    is_sim = 1 if interaction.get("is_simulation") else 0
+    async with get_db() as db:
+        await db.execute("""
+            INSERT INTO instagram_interactions (
+                id, rule_id, keyword_matched, commenter_id, commenter_username,
+                comment_text, comment_id, media_id, response_status, response_sent,
+                error_message, timestamp, is_simulation
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+        """, (
+            inter_id,
+            interaction.get("rule_id", ""),
+            interaction.get("keyword_matched", ""),
+            interaction.get("commenter_id", ""),
+            interaction.get("commenter_username", ""),
+            interaction.get("comment_text", ""),
+            interaction.get("comment_id", ""),
+            interaction.get("media_id", ""),
+            interaction.get("response_status", "sent"),
+            interaction.get("response_sent", ""),
+            interaction.get("error_message", ""),
+            interaction.get("timestamp") or now_iso,
+            is_sim
+        ))
+        if interaction.get("rule_id"):
+            await db.execute("UPDATE instagram_automation_rules SET trigger_count = trigger_count + 1 WHERE id = ?;", (interaction["rule_id"],))
+        await db.commit()
+    interaction["id"] = inter_id
+    interaction["is_simulation"] = is_sim
+    return interaction
+
+async def list_instagram_interactions(limit: int = 50) -> List[Dict[str, Any]]:
+    async with get_db() as db:
+        cursor = await db.execute("SELECT * FROM instagram_interactions ORDER BY timestamp DESC LIMIT ?;", (limit,))
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+
+# 3. WhatsApp Automation Rules & Conversations
+async def save_whatsapp_rule(rule: Dict[str, Any]) -> Dict[str, Any]:
+    rule_id = rule.get("id") or f"rule_wa_{uuid.uuid4().hex[:8]}"
+    now_iso = datetime.now().isoformat()
+    resp_msg = rule.get("response_message") or rule.get("response_template") or rule.get("reply_template") or ""
+    res_url = rule.get("resource_url") or rule.get("resource_link") or ""
+    async with get_db() as db:
+        await db.execute("""
+            INSERT INTO whatsapp_automation_rules (
+                id, name, keyword, match_type, response_message, resource_url,
+                is_active, trigger_count, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
+                keyword = excluded.keyword,
+                match_type = excluded.match_type,
+                response_message = excluded.response_message,
+                resource_url = excluded.resource_url,
+                is_active = excluded.is_active,
+                updated_at = excluded.updated_at;
+        """, (
+            rule_id,
+            rule.get("name", "WhatsApp Rule"),
+            rule.get("keyword", "").upper().strip(),
+            rule.get("match_type", "exact"),
+            resp_msg,
+            res_url,
+            1 if rule.get("is_active", True) else 0,
+            rule.get("trigger_count", 0),
+            rule.get("created_at") or now_iso,
+            now_iso
+        ))
+        await db.commit()
+    return await get_whatsapp_rule_by_id(rule_id)
+
+async def get_whatsapp_rule_by_id(rule_id: str) -> Optional[Dict[str, Any]]:
+    async with get_db() as db:
+        cursor = await db.execute("SELECT * FROM whatsapp_automation_rules WHERE id = ? LIMIT 1;", (rule_id,))
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        d["response_template"] = d.get("response_message", "")
+        d["reply_template"] = d.get("response_message", "")
+        d["resource_link"] = d.get("resource_url", "")
+        return d
+
+async def list_whatsapp_rules() -> List[Dict[str, Any]]:
+    async with get_db() as db:
+        cursor = await db.execute("SELECT * FROM whatsapp_automation_rules ORDER BY created_at DESC;")
+        rows = await cursor.fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            d["response_template"] = d.get("response_message", "")
+            d["reply_template"] = d.get("response_message", "")
+            d["resource_link"] = d.get("resource_url", "")
+            result.append(d)
+        return result
+
+async def delete_whatsapp_rule(rule_id: str) -> bool:
+    async with get_db() as db:
+        await db.execute("DELETE FROM whatsapp_automation_rules WHERE id = ?;", (rule_id,))
+        await db.commit()
+    return True
+
+async def save_whatsapp_message(msg: Dict[str, Any]) -> Dict[str, Any]:
+    msg_id = msg.get("id") or f"wa_msg_{uuid.uuid4().hex[:10]}"
+    now_iso = datetime.now().isoformat()
+    is_sim = 1 if msg.get("is_simulation") else 0
+    async with get_db() as db:
+        await db.execute("""
+            INSERT INTO whatsapp_conversations (
+                id, contact_phone, contact_name, direction, message_body,
+                message_id, status, error_message, timestamp, is_simulation
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+        """, (
+            msg_id,
+            msg.get("contact_phone", ""),
+            msg.get("contact_name", ""),
+            msg.get("direction", "inbound"),
+            msg.get("message_body", ""),
+            msg.get("message_id", ""),
+            msg.get("status", "received"),
+            msg.get("error_message", ""),
+            msg.get("timestamp") or now_iso,
+            is_sim
+        ))
+        await db.commit()
+    msg["id"] = msg_id
+    msg["is_simulation"] = is_sim
+    return msg
+
+async def list_whatsapp_messages(contact_phone: Optional[str] = None, limit: int = 50) -> List[Dict[str, Any]]:
+    async with get_db() as db:
+        if contact_phone:
+            cursor = await db.execute("SELECT * FROM whatsapp_conversations WHERE contact_phone = ? ORDER BY timestamp DESC LIMIT ?;", (contact_phone, limit))
+        else:
+            cursor = await db.execute("SELECT * FROM whatsapp_conversations ORDER BY timestamp DESC LIMIT ?;", (limit,))
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+
+# 4. AI Calling Tasks
+async def save_call_task(call: Dict[str, Any]) -> Dict[str, Any]:
+    call_id = call.get("id") or f"call_{uuid.uuid4().hex[:10]}"
+    now_iso = datetime.now().isoformat()
+    is_sim = 1 if call.get("is_simulation") else 0
+    async with get_db() as db:
+        await db.execute("""
+            INSERT INTO call_tasks (
+                id, recipient_phone, recipient_name, direction, purpose, prompt_script,
+                scheduled_time, status, approval_id, call_sid, duration_seconds,
+                transcript, summary, outcome, created_at, updated_at, is_simulation
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                recipient_phone = excluded.recipient_phone,
+                recipient_name = excluded.recipient_name,
+                purpose = excluded.purpose,
+                prompt_script = excluded.prompt_script,
+                scheduled_time = excluded.scheduled_time,
+                status = excluded.status,
+                approval_id = excluded.approval_id,
+                call_sid = excluded.call_sid,
+                duration_seconds = excluded.duration_seconds,
+                transcript = excluded.transcript,
+                summary = excluded.summary,
+                outcome = excluded.outcome,
+                updated_at = excluded.updated_at,
+                is_simulation = excluded.is_simulation;
+        """, (
+            call_id,
+            call.get("recipient_phone", ""),
+            call.get("recipient_name", ""),
+            call.get("direction", "outbound"),
+            call.get("purpose", ""),
+            call.get("prompt_script", ""),
+            call.get("scheduled_time"),
+            call.get("status", "pending_approval"),
+            call.get("approval_id", ""),
+            call.get("call_sid", ""),
+            call.get("duration_seconds", 0),
+            call.get("transcript", ""),
+            call.get("summary", ""),
+            call.get("outcome", ""),
+            call.get("created_at") or now_iso,
+            now_iso,
+            is_sim
+        ))
+        await db.commit()
+    return await get_call_task_by_id(call_id)
+
+async def get_call_task_by_id(call_id: str) -> Optional[Dict[str, Any]]:
+    async with get_db() as db:
+        cursor = await db.execute("SELECT * FROM call_tasks WHERE id = ? LIMIT 1;", (call_id,))
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+async def get_call_task_by_sid(call_sid: str) -> Optional[Dict[str, Any]]:
+    if not call_sid:
+        return None
+    async with get_db() as db:
+        cursor = await db.execute("SELECT * FROM call_tasks WHERE call_sid = ? ORDER BY created_at DESC LIMIT 1;", (call_sid,))
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+async def list_call_tasks(status: Optional[str] = None, direction: Optional[str] = None, limit: int = 50) -> List[Dict[str, Any]]:
+    clauses = []
+    params = []
+    if status and status != "all":
+        clauses.append("status = ?")
+        params.append(status)
+    if direction and direction != "all":
+        clauses.append("direction = ?")
+        params.append(direction)
+
+    where_sql = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+    query = f"SELECT * FROM call_tasks{where_sql} ORDER BY created_at DESC LIMIT ?;"
+    params.append(limit)
+
+    async with get_db() as db:
+        cursor = await db.execute(query, tuple(params))
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+async def update_call_task_status(call_id: str, status: str, outcome: str = "", summary: str = "", transcript: str = "", duration_seconds: int = 0) -> Optional[Dict[str, Any]]:
+    now_iso = datetime.now().isoformat()
+    async with get_db() as db:
+        await db.execute("""
+            UPDATE call_tasks
+            SET status = ?, outcome = COALESCE(NULLIF(?, ''), outcome),
+                summary = COALESCE(NULLIF(?, ''), summary),
+                transcript = COALESCE(NULLIF(?, ''), transcript),
+                duration_seconds = CASE WHEN ? > 0 THEN ? ELSE duration_seconds END,
+                updated_at = ?
+            WHERE id = ?;
+        """, (status, outcome, summary, transcript, duration_seconds, duration_seconds, now_iso, call_id))
+        await db.commit()
+    return await get_call_task_by_id(call_id)
+
+async def delete_call_task(call_id: str) -> bool:
+    async with get_db() as db:
+        await db.execute("DELETE FROM call_tasks WHERE id = ?;", (call_id,))
+        await db.commit()
+    return True
+
+
+# 5. Email Tasks
+async def save_email_task(task: Dict[str, Any]) -> Dict[str, Any]:
+    task_id = task.get("id") or f"em_{uuid.uuid4().hex[:10]}"
+    now_iso = datetime.now().isoformat()
+    async with get_db() as db:
+        await db.execute("""
+            INSERT INTO email_tasks (
+                id, to_email, subject, body, category, status, approval_id,
+                provider, message_id, error_message, created_at, sent_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                to_email = excluded.to_email,
+                subject = excluded.subject,
+                body = excluded.body,
+                category = excluded.category,
+                status = excluded.status,
+                approval_id = excluded.approval_id,
+                provider = excluded.provider,
+                message_id = excluded.message_id,
+                error_message = excluded.error_message,
+                sent_at = excluded.sent_at;
+        """, (
+            task_id,
+            task.get("to_email", ""),
+            task.get("subject", ""),
+            task.get("body", ""),
+            task.get("category", "custom"),
+            task.get("status", "draft"),
+            task.get("approval_id", ""),
+            task.get("provider", ""),
+            task.get("message_id", ""),
+            task.get("error_message", ""),
+            task.get("created_at") or now_iso,
+            task.get("sent_at")
+        ))
+        await db.commit()
+    return await get_email_task_by_id(task_id)
+
+async def get_email_task_by_id(task_id: str) -> Optional[Dict[str, Any]]:
+    async with get_db() as db:
+        cursor = await db.execute("SELECT * FROM email_tasks WHERE id = ? LIMIT 1;", (task_id,))
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+async def list_email_tasks(status: Optional[str] = None, limit: int = 50) -> List[Dict[str, Any]]:
+    async with get_db() as db:
+        if status and status != "all":
+            cursor = await db.execute("SELECT * FROM email_tasks WHERE status = ? ORDER BY created_at DESC LIMIT ?;", (status, limit))
+        else:
+            cursor = await db.execute("SELECT * FROM email_tasks ORDER BY created_at DESC LIMIT ?;", (limit,))
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+async def update_email_task_status(task_id: str, status: str, message_id: str = "", error_message: str = "") -> Optional[Dict[str, Any]]:
+    now_iso = datetime.now().isoformat()
+    async with get_db() as db:
+        query = "UPDATE email_tasks SET status = ?"
+        params = [status]
+        if status == "sent":
+            query += ", sent_at = ?"
+            params.append(now_iso)
+        if message_id:
+            query += ", message_id = ?"
+            params.append(message_id)
+        if error_message:
+            query += ", error_message = ?"
+            params.append(error_message)
+        query += " WHERE id = ?"
+        params.append(task_id)
+        await db.execute(query, tuple(params))
+        await db.commit()
+    return await get_email_task_by_id(task_id)
+
+
+# 6. Research Documents
+async def save_research_document(doc: Dict[str, Any]) -> Dict[str, Any]:
+    doc_id = doc.get("id") or f"res_{uuid.uuid4().hex[:10]}"
+    now_iso = datetime.now().isoformat()
+    exec_summary = doc.get("executive_summary") or doc.get("summary", "")
+    sources_data = {
+        "sources": doc.get("sources", []),
+        "citations": doc.get("citations", []),
+        "key_findings": doc.get("key_findings", []),
+        "fact_attribution": doc.get("fact_attribution", []),
+        "platform_content": doc.get("platform_content", {})
+    }
+    async with get_db() as db:
+        await db.execute("""
+            INSERT INTO research_documents (
+                id, topic, target_platform, tone, language, summary,
+                content_md, sources_json, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                topic = excluded.topic,
+                target_platform = excluded.target_platform,
+                tone = excluded.tone,
+                language = excluded.language,
+                summary = excluded.summary,
+                content_md = excluded.content_md,
+                sources_json = excluded.sources_json,
+                updated_at = excluded.updated_at;
+        """, (
+            doc_id,
+            doc.get("topic", ""),
+            doc.get("target_platform", "article"),
+            doc.get("tone", "informative"),
+            doc.get("language", "en"),
+            exec_summary,
+            doc.get("content_md", ""),
+            json.dumps(sources_data),
+            doc.get("created_at") or now_iso,
+            now_iso
+        ))
+        await db.commit()
+    return await get_research_document_by_id(doc_id)
+
+def _unpack_research_doc(d: Dict[str, Any]) -> Dict[str, Any]:
+    raw_sources = d.get("sources_json") or "[]"
+    try:
+        parsed = json.loads(raw_sources)
+    except Exception:
+        parsed = []
+
+    if isinstance(parsed, dict):
+        d["sources"] = parsed.get("sources", [])
+        d["citations"] = parsed.get("citations", [])
+        d["key_findings"] = parsed.get("key_findings", [])
+        d["fact_attribution"] = parsed.get("fact_attribution", [])
+        d["platform_content"] = parsed.get("platform_content", {})
+    elif isinstance(parsed, list):
+        d["sources"] = parsed
+        d["citations"] = [
+            {"title": s.get("title", s.get("source", "Reference")), "url": s.get("url", "#"), "source": s.get("source", "Web")}
+            for s in parsed if isinstance(s, dict)
+        ]
+        d["key_findings"] = []
+        d["fact_attribution"] = []
+        d["platform_content"] = {}
+    else:
+        d["sources"] = []
+        d["citations"] = []
+        d["key_findings"] = []
+        d["fact_attribution"] = []
+        d["platform_content"] = {}
+
+    d["executive_summary"] = d.get("summary") or "Synthesized research dossier."
+    return d
+
+async def get_research_document_by_id(doc_id: str) -> Optional[Dict[str, Any]]:
+    async with get_db() as db:
+        cursor = await db.execute("SELECT * FROM research_documents WHERE id = ? LIMIT 1;", (doc_id,))
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        return _unpack_research_doc(dict(row))
+
+async def list_research_documents(limit: int = 50) -> List[Dict[str, Any]]:
+    async with get_db() as db:
+        cursor = await db.execute("SELECT * FROM research_documents ORDER BY created_at DESC LIMIT ?;", (limit,))
+        rows = await cursor.fetchall()
+        return [_unpack_research_doc(dict(r)) for r in rows]
+
+async def delete_research_document(doc_id: str) -> bool:
+    async with get_db() as db:
+        await db.execute("DELETE FROM research_documents WHERE id = ?;", (doc_id,))
+        await db.commit()
+    return True
+
+
+# 7. Central AI Memory
+async def get_memory_value(category: str, key: str) -> Any:
+    async with get_db() as db:
+        cursor = await db.execute("SELECT value_json FROM central_ai_memory WHERE category = ? AND key = ? LIMIT 1;", (category, key))
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        try:
+            return json.loads(row[0])
+        except Exception:
+            return row[0]
+
+async def set_memory_value(category: str, key: str, value: Any, description: str = "") -> Dict[str, Any]:
+    now_iso = datetime.now().isoformat()
+    val_json = json.dumps(value) if not isinstance(value, str) else value
+    item_id = f"mem_{category}_{key}".replace(" ", "_").lower()
+    async with get_db() as db:
+        await db.execute("""
+            INSERT INTO central_ai_memory (id, category, key, value_json, description, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                value_json = excluded.value_json,
+                description = CASE WHEN excluded.description != '' THEN excluded.description ELSE central_ai_memory.description END,
+                updated_at = excluded.updated_at;
+        """, (item_id, category, key, val_json, description, now_iso))
+        await db.commit()
+    return {"id": item_id, "category": category, "key": key, "value": value, "description": description, "updated_at": now_iso}
+
+async def list_memory_items(category: Optional[str] = None) -> List[Dict[str, Any]]:
+    async with get_db() as db:
+        if category and category != "all":
+            cursor = await db.execute("SELECT * FROM central_ai_memory WHERE category = ? ORDER BY updated_at DESC;", (category,))
+        else:
+            cursor = await db.execute("SELECT * FROM central_ai_memory ORDER BY category, key;")
+        rows = await cursor.fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["value"] = json.loads(d.get("value_json") or "{}")
+            except Exception:
+                d["value"] = d.get("value_json")
+            result.append(d)
+        return result
+
+async def delete_memory_item(item_id: str) -> bool:
+    async with get_db() as db:
+        await db.execute("DELETE FROM central_ai_memory WHERE id = ? OR key = ?;", (item_id, item_id))
+        await db.commit()
+    return True
+
+async def get_all_memory_context() -> Dict[str, Any]:
+    items = await list_memory_items()
+    context = {}
+    for it in items:
+        cat = it.get("category", "general")
+        if cat not in context:
+            context[cat] = {}
+        context[cat][it["key"]] = it.get("value")
+    return context
+
+
+# 8. Automation Rules & Logs
+async def save_automation_rule(rule: Dict[str, Any]) -> Dict[str, Any]:
+    rule_id = rule.get("id") or f"ar_{uuid.uuid4().hex[:8]}"
+    now_iso = datetime.now().isoformat()
+    async with get_db() as db:
+        await db.execute("""
+            INSERT INTO automation_rules (
+                id, name, trigger_type, trigger_config_json, condition_config_json,
+                action_type, action_config_json, requires_approval, is_enabled,
+                last_run_at, run_count, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
+                trigger_type = excluded.trigger_type,
+                trigger_config_json = excluded.trigger_config_json,
+                condition_config_json = excluded.condition_config_json,
+                action_type = excluded.action_type,
+                action_config_json = excluded.action_config_json,
+                requires_approval = excluded.requires_approval,
+                is_enabled = excluded.is_enabled,
+                updated_at = excluded.updated_at;
+        """, (
+            rule_id,
+            rule.get("name", "Untitled Rule"),
+            rule.get("trigger_type", "schedule"),
+            json.dumps(rule.get("trigger_config", {})),
+            json.dumps(rule.get("condition_config", {})),
+            rule.get("action_type", "send_email"),
+            json.dumps(rule.get("action_config", {})),
+            1 if rule.get("requires_approval", True) else 0,
+            1 if rule.get("is_enabled", True) else 0,
+            rule.get("last_run_at"),
+            rule.get("run_count", 0),
+            rule.get("created_at") or now_iso,
+            now_iso
+        ))
+        await db.commit()
+    return await get_automation_rule_by_id(rule_id)
+
+async def get_automation_rule_by_id(rule_id: str) -> Optional[Dict[str, Any]]:
+    async with get_db() as db:
+        cursor = await db.execute("SELECT * FROM automation_rules WHERE id = ? LIMIT 1;", (rule_id,))
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        d["trigger_config"] = json.loads(d.get("trigger_config_json") or "{}")
+        d["condition_config"] = json.loads(d.get("condition_config_json") or "{}")
+        d["action_config"] = json.loads(d.get("action_config_json") or "{}")
+        d["is_active"] = bool(d.get("is_enabled"))
+        d["is_enabled"] = bool(d.get("is_enabled"))
+        return d
+
+async def list_automation_rules() -> List[Dict[str, Any]]:
+    async with get_db() as db:
+        cursor = await db.execute("SELECT * FROM automation_rules ORDER BY created_at DESC;")
+        rows = await cursor.fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            d["trigger_config"] = json.loads(d.get("trigger_config_json") or "{}")
+            d["condition_config"] = json.loads(d.get("condition_config_json") or "{}")
+            d["action_config"] = json.loads(d.get("action_config_json") or "{}")
+            d["is_active"] = bool(d.get("is_enabled"))
+            d["is_enabled"] = bool(d.get("is_enabled"))
+            result.append(d)
+        return result
+
+async def toggle_automation_rule(rule_id: str, is_enabled: bool) -> Optional[Dict[str, Any]]:
+    now_iso = datetime.now().isoformat()
+    async with get_db() as db:
+        await db.execute("UPDATE automation_rules SET is_enabled = ?, updated_at = ? WHERE id = ?;", (1 if is_enabled else 0, now_iso, rule_id))
+        await db.commit()
+    return await get_automation_rule_by_id(rule_id)
+
+async def delete_automation_rule(rule_id: str) -> bool:
+    async with get_db() as db:
+        await db.execute("DELETE FROM automation_rules WHERE id = ?;", (rule_id,))
+        await db.commit()
+    return True
+
+async def save_automation_rule_log(log: Dict[str, Any]) -> Dict[str, Any]:
+    log_id = log.get("id") or f"arl_{uuid.uuid4().hex[:10]}"
+    now_iso = datetime.now().isoformat()
+    async with get_db() as db:
+        await db.execute("""
+            INSERT INTO automation_rule_logs (
+                id, rule_id, trigger_event_json, action_taken_json, status, details, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?);
+        """, (
+            log_id,
+            log.get("rule_id", ""),
+            json.dumps(log.get("trigger_event", {})),
+            json.dumps(log.get("action_taken", {})),
+            log.get("status", "success"),
+            log.get("details", ""),
+            log.get("created_at") or now_iso
+        ))
+        if log.get("rule_id"):
+            await db.execute("UPDATE automation_rules SET run_count = run_count + 1, last_run_at = ? WHERE id = ?;", (now_iso, log["rule_id"]))
+        await db.commit()
+    log["id"] = log_id
+    return log
+
+async def list_automation_rule_logs(rule_id: Optional[str] = None, limit: int = 50) -> List[Dict[str, Any]]:
+    async with get_db() as db:
+        if rule_id:
+            cursor = await db.execute("SELECT * FROM automation_rule_logs WHERE rule_id = ? ORDER BY created_at DESC LIMIT ?;", (rule_id, limit))
+        else:
+            cursor = await db.execute("SELECT * FROM automation_rule_logs ORDER BY created_at DESC LIMIT ?;", (limit,))
+        rows = await cursor.fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            d["trigger_event"] = json.loads(d.get("trigger_event_json") or "{}")
+            d["action_taken"] = json.loads(d.get("action_taken_json") or "{}")
+            result.append(d)
+        return result
+
+
+# 9. Unified Dashboard KPIs
+async def get_unified_dashboard_kpis() -> Dict[str, Any]:
+    """Aggregates real-time metrics across all 10 AgentFlow agents."""
+    async with get_db() as db:
+        # 1. Career metrics
+        jobs_res = await (await db.execute("SELECT COUNT(*) FROM job_listings;")).fetchone()
+        apps_res = await (await db.execute("SELECT COUNT(*) FROM job_applications;")).fetchone()
+        prof_res = await (await db.execute("SELECT completeness_score FROM career_profiles WHERE id = 'default';")).fetchone()
+
+        # 2. Social Media metrics
+        social_res = await (await db.execute("SELECT COUNT(*), SUM(CASE WHEN status='scheduled' THEN 1 ELSE 0 END), SUM(CASE WHEN status='published' THEN 1 ELSE 0 END) FROM social_posts;")).fetchone()
+
+        # 3. Instagram metrics
+        ig_rules = await (await db.execute("SELECT COUNT(*) FROM instagram_automation_rules WHERE is_active=1;")).fetchone()
+        ig_int = await (await db.execute("SELECT COUNT(*) FROM instagram_interactions;")).fetchone()
+
+        # 4. WhatsApp metrics
+        wa_rules = await (await db.execute("SELECT COUNT(*) FROM whatsapp_automation_rules WHERE is_active=1;")).fetchone()
+        wa_msgs = await (await db.execute("SELECT COUNT(*) FROM whatsapp_conversations;")).fetchone()
+
+        # 5. Calling metrics
+        calls_res = await (await db.execute("SELECT COUNT(*), SUM(CASE WHEN status='pending_approval' THEN 1 ELSE 0 END), SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) FROM call_tasks;")).fetchone()
+
+        # 6. Email metrics
+        email_res = await (await db.execute("SELECT COUNT(*), SUM(CASE WHEN status='sent' THEN 1 ELSE 0 END) FROM email_tasks;")).fetchone()
+
+        # 7. Approvals
+        appr_res = await (await db.execute("SELECT COUNT(*) FROM approvals WHERE decision = 'pending';")).fetchone()
+
+        # 8. Workflow executions today
+        today_iso = datetime.now().strftime("%Y-%m-%d")
+        runs_res = await (await db.execute("SELECT COUNT(*) FROM workflow_runs WHERE started_at LIKE ?;", (f"{today_iso}%",))).fetchone()
+
+        # 9. Research docs
+        res_docs = await (await db.execute("SELECT COUNT(*) FROM research_documents;")).fetchone()
+
+        # 10. Automation Rules
+        auto_rules_res = await (await db.execute("SELECT COUNT(*), SUM(CASE WHEN is_enabled=1 THEN 1 ELSE 0 END) FROM automation_rules;")).fetchone()
+
+        return {
+            "career": {
+                "profile_completeness": prof_res[0] if prof_res else 0,
+                "jobs_discovered": jobs_res[0] if jobs_res else 0,
+                "applications_tracked": apps_res[0] if apps_res else 0
+            },
+            "social": {
+                "total_posts": social_res[0] or 0 if social_res else 0,
+                "scheduled": social_res[1] or 0 if social_res else 0,
+                "published": social_res[2] or 0 if social_res else 0
+            },
+            "instagram": {
+                "active_rules": ig_rules[0] if ig_rules else 0,
+                "interactions_count": ig_int[0] if ig_int else 0
+            },
+            "whatsapp": {
+                "active_rules": wa_rules[0] if wa_rules else 0,
+                "messages_count": wa_msgs[0] if wa_msgs else 0
+            },
+            "calling": {
+                "total_calls": calls_res[0] or 0 if calls_res else 0,
+                "pending_approval": calls_res[1] or 0 if calls_res else 0,
+                "completed_calls": calls_res[2] or 0 if calls_res else 0
+            },
+            "email": {
+                "total_emails": email_res[0] or 0 if email_res else 0,
+                "sent_emails": email_res[1] or 0 if email_res else 0
+            },
+            "system": {
+                "pending_approvals": appr_res[0] if appr_res else 0,
+                "runs_today": runs_res[0] if runs_res else 0,
+                "research_documents": res_docs[0] if res_docs else 0,
+                "total_automation_rules": auto_rules_res[0] or 0 if auto_rules_res else 0,
+                "active_automation_rules": auto_rules_res[1] or 0 if auto_rules_res else 0
+            }
+        }
+
+
+async def purge_demo_and_test_data() -> Dict[str, int]:
+    """
+    Cleanses the database of seeded demo records, test calls, mock interactions,
+    and hardcoded repository URLs. Preserves real career agent items, real monitors,
+    and user-configured integrations.
+    """
+    counts = {}
+    async with get_db() as db:
+        # 1. Purge all mock/test call tasks (resetting to clean state for incoming voice)
+        c = await db.execute("SELECT COUNT(*) FROM call_tasks;")
+        r = await c.fetchone()
+        counts["purged_calls"] = r[0] if r else 0
+        await db.execute("DELETE FROM call_tasks;")
+
+        # 2. Purge seeded mock WhatsApp conversations
+        c = await db.execute("SELECT COUNT(*) FROM whatsapp_conversations;")
+        r = await c.fetchone()
+        counts["purged_whatsapp_conversations"] = r[0] if r else 0
+        await db.execute("DELETE FROM whatsapp_conversations;")
+
+        # 3. Purge seeded mock Instagram interactions
+        c = await db.execute("SELECT COUNT(*) FROM instagram_interactions;")
+        r = await c.fetchone()
+        counts["purged_instagram_interactions"] = r[0] if r else 0
+        await db.execute("DELETE FROM instagram_interactions;")
+
+        # 4. Remove any hardcoded rules referencing the personal GitHub repo
+        c = await db.execute("SELECT COUNT(*) FROM instagram_automation_rules WHERE resource_url LIKE '%github.com/Insha-713%' OR response_message LIKE '%github.com/Insha-713%';")
+        r = await c.fetchone()
+        counts["purged_demo_ig_rules"] = r[0] if r else 0
+        await db.execute("DELETE FROM instagram_automation_rules WHERE resource_url LIKE '%github.com/Insha-713%' OR response_message LIKE '%github.com/Insha-713%';")
+
+        c = await db.execute("SELECT COUNT(*) FROM whatsapp_automation_rules WHERE resource_url LIKE '%github.com/Insha-713%' OR response_message LIKE '%github.com/Insha-713%';")
+        r = await c.fetchone()
+        counts["purged_demo_wa_rules"] = r[0] if r else 0
+        await db.execute("DELETE FROM whatsapp_automation_rules WHERE resource_url LIKE '%github.com/Insha-713%' OR response_message LIKE '%github.com/Insha-713%';")
+
+        # 5. Remove hardcoded personal profile from central memory
+        c = await db.execute("SELECT COUNT(*) FROM central_ai_memory WHERE key IN ('candidate_summary', 'social_media_profiles') OR value_json LIKE '%github.com/Insha-713%';")
+        r = await c.fetchone()
+        counts["purged_demo_memory"] = r[0] if r else 0
+        await db.execute("DELETE FROM central_ai_memory WHERE key IN ('candidate_summary', 'social_media_profiles') OR value_json LIKE '%github.com/Insha-713%';")
+
+        # 6. Remove demo automation rule
+        await db.execute("DELETE FROM automation_rules WHERE id = 'rule_when_ig_guide' OR action_config_json LIKE '%github.com/Insha-713%';")
+
+        # 7. Clean test social posts
+        c = await db.execute("SELECT COUNT(*) FROM social_posts WHERE content LIKE '%Sensitive milestone%' OR content LIKE '%Lifecycle test%';")
+        r = await c.fetchone()
+        counts["purged_test_posts"] = r[0] if r else 0
+        await db.execute("DELETE FROM social_posts WHERE content LIKE '%Sensitive milestone%' OR content LIKE '%Lifecycle test%';")
+
+        await db.commit()
+    return counts
+
+

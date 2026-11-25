@@ -26,7 +26,7 @@ import {
   XAxis
 } from 'recharts';
 
-export default function MonitoringPage() {
+export default function MonitoringPage({ onNavigate = () => {} }) {
   const [monitors, setMonitors] = useState([]);
   const [kpis, setKpis] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -220,10 +220,18 @@ export default function MonitoringPage() {
               <Activity className="w-6 h-6" />
             </div>
             <div>
-              <h1 className="text-2xl font-bold font-display text-white">Website & API Monitoring</h1>
-              <p className="text-sm text-slate-400">
-                Live uptime, status code, latency checks on a schedule & repeated-failure incident detection.
+              <h1 className="text-2xl font-bold font-display text-slate-900 dark:text-white">Website &amp; API Monitoring</h1>
+              <p className="text-sm text-slate-500 dark:text-slate-400">
+                Live uptime, status code, latency checks on a schedule &amp; repeated-failure incident detection.
               </p>
+              <button
+                type="button"
+                onClick={() => onNavigate('help')}
+                className="text-xs text-cyan-600 dark:text-cyan-400 hover:underline flex items-center gap-1 mt-1 font-medium"
+              >
+                <span>Learn how to use this feature</span>
+                <ExternalLink className="w-3 h-3" />
+              </button>
             </div>
           </div>
         </div>

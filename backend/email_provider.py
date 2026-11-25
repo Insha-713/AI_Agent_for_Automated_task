@@ -318,3 +318,118 @@ def send_email_via_provider(to_email: str, subject: str, body: str) -> str:
                     f"Set EMAIL_PROVIDER=brevo or resend and an API key."
                 )
             return f"Failed to send email to '{clean_to}': {err_str}"
+
+
+def fetch_inbox_emails(limit: int = 15) -> Dict[str, Any]:
+    """
+    Fetches genuine inbox emails from configured IMAP or Gmail account.
+    Returns: { "status": "success" | "not_configured" | "error", "emails": [...], "count": int, "message": str }
+    """
+    from backend.credentials import get_credential
+    creds = get_email_credentials()
+    email_user = creds["email_user"]
+    email_pass = creds["email_pass"]
+    imap_host = get_credential("IMAP_HOST", "imap.gmail.com")
+    try:
+        imap_port = int(get_credential("IMAP_PORT", "993"))
+    except Exception:
+        imap_port = 993
+
+    if not email_user or not email_pass:
+        return {
+            "status": "not_configured",
+            "emails": [],
+            "count": 0,
+            "message": "Email account is not connected. Configure your email in Connections & Setup to fetch messages."
+        }
+
+    import imaplib
+    import email
+    from email.header import decode_header
+
+    try:
+        mail = imaplib.IMAP4_SSL(imap_host, imap_port, timeout=8)
+        mail.login(email_user, email_pass)
+        mail.select("INBOX")
+        status, data = mail.search(None, "ALL")
+        if status != "OK" or not data or not data[0]:
+            try:
+                mail.logout()
+            except Exception:
+                pass
+            return {"status": "success", "emails": [], "count": 0, "message": "Inbox is empty."}
+
+        mail_ids = data[0].split()
+        recent_ids = mail_ids[-limit:]
+        recent_ids.reverse()
+
+        emails_list = []
+        for mid in recent_ids:
+            try:
+                res, msg_data = mail.fetch(mid, "(RFC822)")
+                if res != "OK":
+                    continue
+                for response_part in msg_data:
+                    if isinstance(response_part, tuple):
+                        raw_email = response_part[1]
+                        msg = email.message_from_bytes(raw_email)
+
+                        subject = "No Subject"
+                        if msg["Subject"]:
+                            decoded_list = decode_header(msg["Subject"])
+                            if decoded_list:
+                                sub_bytes, encoding = decoded_list[0]
+                                if isinstance(sub_bytes, bytes):
+                                    subject = sub_bytes.decode(encoding or "utf-8", errors="ignore")
+                                else:
+                                    subject = str(sub_bytes)
+
+                        sender = msg.get("From", "Unknown Sender")
+                        date_str = msg.get("Date", "")
+
+                        body_text = ""
+                        if msg.is_multipart():
+                            for part in msg.walk():
+                                ctype = part.get_content_type()
+                                cdisp = str(part.get("Content-Disposition"))
+                                if ctype == "text/plain" and "attachment" not in cdisp:
+                                    payload = part.get_payload(decode=True)
+                                    if payload:
+                                        body_text = payload.decode("utf-8", errors="ignore")
+                                    break
+                        else:
+                            payload = msg.get_payload(decode=True)
+                            if payload:
+                                body_text = payload.decode("utf-8", errors="ignore")
+
+                        snippet = body_text.strip().replace("\n", " ")[:200]
+                        emails_list.append({
+                            "id": f"mail_{mid.decode('utf-8', errors='ignore')}",
+                            "subject": subject,
+                            "sender": sender,
+                            "date": date_str,
+                            "snippet": snippet,
+                            "body": body_text[:2000]
+                        })
+            except Exception:
+                continue
+
+        try:
+            mail.logout()
+        except Exception:
+            pass
+
+        return {
+            "status": "success",
+            "emails": emails_list,
+            "count": len(emails_list),
+            "message": f"Fetched {len(emails_list)} emails from {email_user}."
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "emails": [],
+            "count": 0,
+            "message": f"IMAP connection notice ({imap_host}): {str(e)}"
+        }
+

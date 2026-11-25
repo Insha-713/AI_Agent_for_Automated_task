@@ -32,6 +32,8 @@ from backend.news_module import (
 from backend.tools import ALL_TOOLS, send_telegram_message
 from backend.workflows import REGISTERED_TOOLS_META
 
+from unittest.mock import patch
+
 def test_stage3():
     print("=== Testing Stage 3: AI News Module & Telegram Delivery ===")
 
@@ -63,10 +65,16 @@ def test_stage3():
         print(f"   - {s['title'][:60]}... ({s['domain']}) [{s.get('published', 'Recent')}]")
 
     # 4. Test Telegram Delivery (Simulation Mode)
-    delivery = deliver_news_to_telegram(digest["markdown_digest"])
-    assert delivery["success"] is True, "Delivery simulation should succeed"
-    assert delivery["mock"] is True, "Should operate in simulation mode when no bot token is set"
-    print("4. Telegram delivery verified: Simulated mode safely handled without paid APIs.")
+    with patch("backend.news_module.send_telegram_message.func") as mock_tg:
+        mock_tg.return_value = (
+            "[SIMULATION MODE - TELEGRAM NOT SENT (APPROVED)]\n"
+            "Notice: TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not configured in settings"
+        )
+        delivery = deliver_news_to_telegram(digest["markdown_digest"])
+        assert delivery["mock"] is True, "Should operate in simulation mode when simulated"
+        assert delivery["simulated"] is True, "Should be marked as simulated"
+        assert delivery["success"] is False, "Should report success only after actual successful delivery"
+        print("4. Telegram delivery verified: Simulated mode safely handled without false success.")
 
     # 5. Test REST Endpoints via TestClient
     client = TestClient(app)
@@ -74,11 +82,14 @@ def test_stage3():
     assert res_digest.status_code == 200, res_digest.text
     assert "stories" in res_digest.json()
 
-    res_tg = client.post("/api/news/deliver-telegram", json={
-        "message": "Test daily news alert from AgentFlow"
-    })
-    assert res_tg.status_code == 200, res_tg.text
-    assert res_tg.json().get("mock") is True
+    with patch("backend.news_module.send_telegram_message.func") as mock_tg:
+        mock_tg.return_value = "[SIMULATION MODE - TELEGRAM NOT SENT (APPROVED)]"
+        res_tg = client.post("/api/news/deliver-telegram", json={
+            "message": "Test daily news alert from AgentFlow"
+        })
+        assert res_tg.status_code == 200, res_tg.text
+        assert res_tg.json().get("mock") is True
+        assert res_tg.json().get("success") is False
     print("5. FastAPI endpoints /api/news/digest and /api/news/deliver-telegram verified.")
 
     print("\nALL STAGE 3 AI NEWS & TELEGRAM MODULE TESTS PASSED SUCCESSFULLY!")

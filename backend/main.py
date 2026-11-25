@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Query, BackgroundTasks, File, UploadFile
+from fastapi import FastAPI, HTTPException, Query, BackgroundTasks, File, UploadFile, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel, Field
@@ -135,6 +135,14 @@ from backend.integrations import (
     get_curated_workflow_templates,
 )
 from backend.career_routes import router as career_router
+from backend.platform_routes import (
+    platform_router, 
+    webhook_router,
+    handle_incoming_voice_call,
+    handle_voice_process_turn,
+    handle_voice_call_status
+)
+from backend.showcase_routes import showcase_router
 
 load_dotenv()
 
@@ -197,6 +205,27 @@ app.add_middleware(
 
 # Register Career Agent Router (AgentFlow v3.0)
 app.include_router(career_router)
+
+# Register Unified Platform & Webhook Routers (AgentFlow v3.0 All-In-One Platform)
+app.include_router(platform_router)
+app.include_router(webhook_router)
+
+# Direct aliases for Twilio Voice Webhooks (/api/voice/* and /api/webhooks/voice/*)
+@app.post("/api/voice/incoming")
+@app.get("/api/voice/incoming")
+async def voice_incoming_alias(request: Request):
+    return await handle_incoming_voice_call(request)
+
+@app.post("/api/voice/process-turn")
+async def voice_process_turn_alias(request: Request):
+    return await handle_voice_process_turn(request)
+
+@app.post("/api/voice/status")
+async def voice_status_alias(request: Request):
+    return await handle_voice_call_status(request)
+
+# Register System Showcase Router (AgentFlow Live Features & Change Verification)
+app.include_router(showcase_router)
 
 
 # Request & Response Models
@@ -430,9 +459,14 @@ async def get_settings():
     """Retrieves stored user preferences and memory with sensitive credentials safely masked."""
     settings = await get_all_settings()
     masked = {}
+    SENSITIVE_PATTERNS = ("PASS", "TOKEN", "KEY", "SECRET", "AUTH", "PWD", "PRIVATE", "CREDENTIAL")
     for k, v in settings.items():
-        if k in ("EMAIL_PASS", "GMAIL_APP_PASSWORD", "TELEGRAM_BOT_TOKEN", "GROQ_API_KEY", "GEMINI_API_KEY"):
+        k_upper = k.upper()
+        if any(term in k_upper for term in SENSITIVE_PATTERNS) and k_upper != "TELEGRAM_CHAT_ID":
             masked[k] = "••••••••••••••••" if v else ""
+        elif k_upper == "TELEGRAM_CHAT_ID":
+            s_val = str(v)
+            masked[k] = f"{s_val[:2]}••••{s_val[-2:]}" if len(s_val) >= 4 else ("••••" if s_val else "")
         else:
             masked[k] = v
     return {"settings": masked}
@@ -442,7 +476,9 @@ async def get_settings():
 async def update_user_setting(req: UpdateSettingRequest):
     """Updates a single user preference or memory entry."""
     k, v = req.key.strip(), req.value.strip()
-    if k in ("EMAIL_USER", "EMAIL_PASS", "GMAIL_EMAIL", "GMAIL_APP_PASSWORD", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "GROQ_API_KEY", "GEMINI_API_KEY", "LLM_PROVIDER", "LLM_MODEL"):
+    k_upper = k.upper()
+    CREDENTIAL_INDICATORS = ("EMAIL", "PASS", "TOKEN", "KEY", "SECRET", "AUTH", "PROVIDER", "MODEL", "TWILIO", "CHAT_ID", "WHATSAPP", "LINKEDIN", "INSTAGRAM")
+    if any(ind in k_upper for ind in CREDENTIAL_INDICATORS):
         set_credential(k, v)
     else:
         await update_setting(k, v)
@@ -452,18 +488,23 @@ async def update_user_setting(req: UpdateSettingRequest):
 @app.post("/api/settings")
 async def bulk_update_settings(req: BulkUpdateSettingsRequest):
     """Updates multiple user memory and preferences at once."""
-    credential_keys = {"EMAIL_USER", "EMAIL_PASS", "GMAIL_EMAIL", "GMAIL_APP_PASSWORD", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "GROQ_API_KEY", "GEMINI_API_KEY", "LLM_PROVIDER", "LLM_MODEL"}
+    CREDENTIAL_INDICATORS = ("EMAIL", "PASS", "TOKEN", "KEY", "SECRET", "AUTH", "PROVIDER", "MODEL", "TWILIO", "CHAT_ID", "WHATSAPP", "LINKEDIN", "INSTAGRAM")
     for k, v in req.settings.items():
-        k_clean, v_clean = k.strip(), str(v).strip()
-        if k_clean in credential_keys:
+        k_clean, v_clean = str(k).strip(), str(v).strip()
+        k_upper = k_clean.upper()
+        if any(ind in k_upper for ind in CREDENTIAL_INDICATORS):
             set_credential(k_clean, v_clean)
         else:
             await update_setting(k_clean, v_clean)
     all_updated = await get_all_settings()
-    # Mask secrets
-    for sk in credential_keys:
-        if sk in all_updated and sk not in ("EMAIL_USER", "GMAIL_EMAIL", "LLM_PROVIDER", "LLM_MODEL", "TELEGRAM_CHAT_ID"):
+    SENSITIVE_PATTERNS = ("PASS", "TOKEN", "KEY", "SECRET", "AUTH", "PWD", "PRIVATE", "CREDENTIAL")
+    for sk in list(all_updated.keys()):
+        sk_upper = sk.upper()
+        if any(term in sk_upper for term in SENSITIVE_PATTERNS) and sk_upper != "TELEGRAM_CHAT_ID":
             all_updated[sk] = "••••••••••••••••" if all_updated[sk] else ""
+        elif sk_upper == "TELEGRAM_CHAT_ID":
+            s_val = str(all_updated[sk])
+            all_updated[sk] = f"{s_val[:2]}••••{s_val[-2:]}" if len(s_val) >= 4 else ("••••" if s_val else "")
     return {"message": "Settings updated successfully.", "settings": all_updated}
 
 

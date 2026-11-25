@@ -16,7 +16,8 @@ import {
   Edit3,
   Globe2,
   AlertTriangle,
-  HelpCircle
+  HelpCircle,
+  ExternalLink
 } from 'lucide-react';
 
 const TIMEZONES = [
@@ -38,7 +39,7 @@ const DAYS_OF_WEEK = [
   { value: 'sun', label: 'Sunday' }
 ];
 
-export default function SchedulesPage() {
+export default function SchedulesPage({ onNavigate = () => {} }) {
   const [schedules, setSchedules] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -242,16 +243,24 @@ export default function SchedulesPage() {
       {/* Page Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-cyan-500/10 border border-cyan-500/20 text-cyan-300 text-xs font-medium mb-2">
+          <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-cyan-500/10 border border-cyan-500/20 text-cyan-600 dark:text-cyan-300 text-xs font-medium mb-2">
             <Clock className="w-3.5 h-3.5" />
             <span>APScheduler Persistent Background Engine</span>
           </div>
-          <h1 className="text-2xl sm:text-3xl font-extrabold font-display text-white">
+          <h1 className="text-2xl sm:text-3xl font-extrabold font-display text-slate-900 dark:text-white">
             Scheduled Tasks
           </h1>
-          <p className="text-xs sm:text-sm text-slate-400 mt-1">
+          <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 mt-1">
             Keep your agent working on schedules: hourly audits, daily digests, weekly reports, or custom cron jobs with timezone precision.
           </p>
+          <button
+            type="button"
+            onClick={() => onNavigate('help')}
+            className="text-xs text-cyan-600 dark:text-cyan-400 hover:underline flex items-center gap-1 mt-1 font-medium"
+          >
+            <span>Learn how to use this feature</span>
+            <ExternalLink className="w-3 h-3" />
+          </button>
         </div>
 
         <div className="flex items-center gap-2">

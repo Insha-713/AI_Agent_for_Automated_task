@@ -56,7 +56,8 @@ from backend.tools import (
     save_file,
     read_file,
     list_files,
-    send_email
+    send_email,
+    send_telegram_message
 )
 
 load_dotenv()
@@ -694,6 +695,22 @@ Format with clean Markdown. Be direct, authoritative, and helpful."""
                 "tool": "save_file",
                 "result": save_res,
                 "tool_call_id": "call_save_file_1"
+            }
+
+        # Check if the user asked to send this summary to Telegram
+        if re.search(r"\btelegram\b", task_prompt, re.I):
+            yield {
+                "type": "tool_call",
+                "tool": "send_telegram_message",
+                "args": {"message": final_content[:4000]},
+                "tool_call_id": "call_telegram_1"
+            }
+            tg_res = send_telegram_message.func(message=final_content[:4000])
+            yield {
+                "type": "tool_result",
+                "tool": "send_telegram_message",
+                "result": tg_res,
+                "tool_call_id": "call_telegram_1"
             }
 
         plan_items[3]["status"] = "completed"

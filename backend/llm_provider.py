@@ -21,7 +21,7 @@ def get_llm_provider() -> str:
     """
     Resolves active LLM provider dynamically at call time.
     Returns: 'ollama', 'groq', or 'gemini'.
-    Defaults to 'ollama' for zero-config local use.
+    Defaults to 'ollama' for zero-config local use, with auto-detection for configured cloud keys.
     """
     raw = os.getenv("LLM_PROVIDER", "").strip().lower()
     if raw in ("groq",):
@@ -30,6 +30,13 @@ def get_llm_provider() -> str:
         return "gemini"
     if raw in ("ollama", "local"):
         return "ollama"
+
+    # If LLM_PROVIDER is unset or empty, auto-detect if cloud keys are provided
+    if os.getenv("GROQ_API_KEY", "").strip():
+        return "groq"
+    if os.getenv("GEMINI_API_KEY", "").strip() or os.getenv("GOOGLE_API_KEY", "").strip():
+        return "gemini"
+
     return "ollama"
 
 
@@ -94,7 +101,7 @@ def is_llm_configured(provider: Optional[str] = None) -> bool:
     return False
 
 
-def is_ollama_alive(base_url: Optional[str] = None, timeout: float = 2.0) -> bool:
+def is_ollama_alive(base_url: Optional[str] = None, timeout: float = 0.8) -> bool:
     """Quick socket/HTTP probe to check if Ollama server is actively responding."""
     url = (base_url or os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")).rstrip("/")
     try:
@@ -216,7 +223,7 @@ def test_llm_connection(prompt: str = "Say 'AgentFlow connection OK' in 5 words 
                 "latency_ms": latency_ms,
                 "endpoint": base_url,
                 "message": "No LLM available on this server. Set LLM_PROVIDER and an API key.",
-                "guidance": "On Render or cloud hosts, set LLM_PROVIDER=groq and GROQ_API_KEY=your_key, or LLM_PROVIDER=gemini and GEMINI_API_KEY=your_key."
+                "guidance": "To use local Ollama: run 'ollama serve' in terminal. For cloud inference: set LLM_PROVIDER=groq and GROQ_API_KEY=your_key, or LLM_PROVIDER=gemini and GEMINI_API_KEY=your_key."
             }
 
     # If cloud provider lacks API key

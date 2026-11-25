@@ -11,14 +11,15 @@ import {
   Languages,
   Clock,
   ArrowRight,
-  Zap
+  Zap,
+  ExternalLink
 } from 'lucide-react';
 import AgentBrain from '../components/AgentBrain';
 import VoiceInputButton from '../components/VoiceInputButton';
 import WorkspaceUpload from '../components/WorkspaceUpload';
 import { getApiUrl } from '../api/config';
   
-export default function TaskPage({ onTaskCompleted }) {
+export default function TaskPage({ onTaskCompleted, onNavigate = () => {} }) {
   const [prompt, setPrompt] = useState('');
   const [isRunning, setIsRunning] = useState(false);
   const [currentTaskId, setCurrentTaskId] = useState(null);
@@ -192,9 +193,17 @@ export default function TaskPage({ onTaskCompleted }) {
         <h1 className="text-3xl sm:text-4xl font-extrabold font-display tracking-tight text-white">
           What can <span className="bg-gradient-to-r from-cyan-400 via-sky-300 to-violet-400 bg-clip-text text-transparent">AgentFlow</span> do for you today?
         </h1>
-        <p className="text-sm text-slate-400 max-w-xl mx-auto">
+        <p className="text-sm text-slate-500 dark:text-slate-400 max-w-xl mx-auto">
           Delegate your repetitive digital tasks: web research, document analysis, writing files, and dispatching emails.
         </p>
+        <button
+          type="button"
+          onClick={() => onNavigate('help')}
+          className="text-xs text-cyan-600 dark:text-cyan-400 hover:underline inline-flex items-center gap-1 mt-1 font-medium"
+        >
+          <span>Learn how to use AI Agent</span>
+          <ExternalLink className="w-3 h-3" />
+        </button>
       </div>
 
       {/* Task Input Card */}

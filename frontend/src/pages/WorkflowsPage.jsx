@@ -86,7 +86,7 @@ const WORKFLOW_TEMPLATES = [
   }
 ];
 
-export default function WorkflowsPage({ onOpenIntegrations = () => {} }) {
+export default function WorkflowsPage({ onOpenIntegrations = () => {}, onNavigate = () => {} }) {
   const [prompt, setPrompt] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
@@ -1159,7 +1159,7 @@ export default function WorkflowsPage({ onOpenIntegrations = () => {} }) {
   const EXAMPLE_CHIPS = [
     { label: '🌤️ Weather email now', prompt: 'Send me the weather report of Lucknow by email to inshaf713@gmail.com' },
     { label: '🤖 Daily AI news on Telegram', prompt: 'Check current IST time, fetch latest AI news in India, and send on Telegram' },
-    { label: '📊 Clean my CSV', prompt: 'Analyze tabular data from workspace/sample.csv, compute KPIs and save executive report' },
+    { label: '📝 Cover Letter Drafter', prompt: 'Draft a professional software engineer cover letter and save to workspace/cover_letter.txt' },
     { label: '💼 Top AI Skills in India', prompt: 'Search top 5 in-demand skills for AI and software engineers in India in 2026, summarize them, and save to workspace/ai_engineer_skills.txt' },
   ];
 
@@ -1180,9 +1180,17 @@ export default function WorkflowsPage({ onOpenIntegrations = () => {} }) {
               Prompt-to-Workflow <span className="text-cyan-400">Engine</span>
             </h1>
           </div>
-          <p className="text-xs sm:text-sm text-slate-400 max-w-2xl">
+          <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 max-w-2xl">
             Turn natural language tasks (in English, Hindi or Urdu) into autonomous, executable step graphs with zero hand-wiring.
           </p>
+          <button
+            type="button"
+            onClick={() => onNavigate('help')}
+            className="text-xs text-cyan-600 dark:text-cyan-400 hover:underline flex items-center gap-1 mt-1 font-medium"
+          >
+            <span>Learn how to build workflows</span>
+            <ExternalLink className="w-3 h-3" />
+          </button>
         </div>
 
         {/* Quick Stats Pill */}

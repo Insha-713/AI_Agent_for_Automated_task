@@ -64,7 +64,7 @@ const STATUS_COLORS = {
   withdrawn: 'bg-slate-800 text-slate-400 border-slate-700'
 };
 
-export default function CareerPage() {
+export default function CareerPage({ onNavigate = () => {} }) {
   const [subTab, setSubTab] = useState('dashboard');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -667,6 +667,14 @@ export default function CareerPage() {
                 <p className="text-xs text-slate-400 mt-0.5">
                   Intelligent Personal AI Career Assistant &bull; 100% Local Inference &bull; Verified Profile Credentials
                 </p>
+                <button
+                  type="button"
+                  onClick={() => onNavigate('help')}
+                  className="text-xs text-cyan-400 hover:underline flex items-center gap-1 mt-1 font-medium"
+                >
+                  <span>Learn how to use Career Agent</span>
+                  <ExternalLink className="w-3 h-3" />
+                </button>
               </div>
             </div>
           </div>

@@ -24,7 +24,7 @@ const PRESET_TOPICS = [
   { label: 'AI Developer Jobs', value: 'AI engineer machine learning jobs hiring India' }
 ];
 
-export default function NewsPage() {
+export default function NewsPage({ onNavigate = () => {} }) {
   const [topic, setTopic] = useState('AI artificial intelligence India developments');
   const [includeArxiv, setIncludeArxiv] = useState(true);
   const [digest, setDigest] = useState(null);
@@ -114,31 +114,39 @@ export default function NewsPage() {
   };
 
   return (
-    <div className="max-w-6xl mx-auto px-4 py-8 space-y-6">
+    <div className="max-w-6xl mx-auto px-4 py-6 space-y-6 animate-fadeIn">
       
       {/* Page Header */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 p-6 rounded-3xl bg-gradient-to-r from-cyan-950/40 via-slate-900/60 to-violet-950/40 border border-white/10 shadow-2xl backdrop-blur-md">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 p-5 sm:p-6 rounded-2xl glass-panel border border-slate-200/80 dark:border-white/10">
         <div>
           <div className="flex items-center gap-2 mb-1">
-            <span className="p-2 rounded-xl bg-cyan-500/20 text-cyan-400 border border-cyan-500/30">
+            <span className="p-2 rounded-xl bg-cyan-500/10 dark:bg-cyan-500/20 text-cyan-600 dark:text-cyan-400 border border-cyan-500/20 dark:border-cyan-500/30">
               <Newspaper className="w-5 h-5" />
             </span>
-            <h1 className="text-xl sm:text-2xl font-bold font-display text-white">
-              AI News & <span className="text-cyan-400">Telegram Bot</span>
+            <h1 className="text-xl sm:text-2xl font-bold font-display text-slate-900 dark:text-white">
+              AI News &amp; <span className="text-cyan-600 dark:text-cyan-400">Telegram Bot</span>
             </h1>
           </div>
-          <p className="text-xs sm:text-sm text-slate-400 max-w-2xl">
-            Real-time news from Google News RSS & arXiv with semantic duplicate removal and 1-click delivery to Telegram.
+          <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 max-w-2xl">
+            Real-time news from Google News RSS &amp; arXiv with semantic duplicate removal and 1-click delivery to Telegram.
           </p>
+          <button
+            type="button"
+            onClick={() => onNavigate('help')}
+            className="text-xs text-cyan-600 dark:text-cyan-400 hover:underline flex items-center gap-1 mt-1.5 font-medium"
+          >
+            <span>Learn how to use this feature</span>
+            <ExternalLink className="w-3 h-3" />
+          </button>
         </div>
 
         <div className="flex items-center gap-2">
           <button
             type="button"
             onClick={handleScheduleDaily}
-            className="px-3.5 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-xs font-semibold text-slate-200 transition-all flex items-center gap-2"
+            className="px-3.5 py-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-semibold shadow-sm transition-all flex items-center gap-2"
           >
-            <Clock className="w-3.5 h-3.5 text-cyan-400" />
+            <Clock className="w-3.5 h-3.5" />
             <span>Schedule Daily (8 AM IST)</span>
           </button>
         </div>

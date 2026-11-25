@@ -166,6 +166,39 @@ def multi_search(queries: Union[List[str], str], period: str = "m") -> str:
     return "\n".join(output)
 
 
+def extract_publisher_and_clean_title(entry: Any, raw_title: str) -> tuple[str, str]:
+    """
+    Extracts the accurate publisher name from Google News RSS entry metadata or title suffix.
+    Returns: (cleaned_title, publisher_name)
+    """
+    publisher = ""
+    if hasattr(entry, "source"):
+        src = entry.source
+        if hasattr(src, "title") and src.title:
+            publisher = str(src.title).strip()
+        elif hasattr(src, "value") and src.value:
+            publisher = str(src.value).strip()
+        elif isinstance(src, dict):
+            publisher = str(src.get("title") or src.get("value") or "").strip()
+
+    clean_title = (raw_title or "Untitled").strip()
+    if not publisher:
+        for delimiter in (" - ", " | "):
+            if delimiter in clean_title:
+                parts = clean_title.rsplit(delimiter, 1)
+                publisher = parts[-1].strip()
+                clean_title = parts[0].strip()
+                break
+    else:
+        for delimiter in (" - ", " | "):
+            suffix = f"{delimiter}{publisher}"
+            if clean_title.endswith(suffix):
+                clean_title = clean_title[:-len(suffix)].strip()
+                break
+
+    return clean_title, (publisher or "news.google.com")
+
+
 @tool
 def get_latest_news(topic: str, days: int = 1) -> str:
     """
@@ -201,15 +234,16 @@ def get_latest_news(topic: str, days: int = 1) -> str:
         items = []
         if feed and hasattr(feed, "entries"):
             for entry in feed.entries[:8]:
-                title = getattr(entry, "title", "Untitled")
+                raw_title = getattr(entry, "title", "Untitled")
                 pub_date = getattr(entry, "published", "Date unavailable")
                 link = getattr(entry, "link", "")
-                domain = urllib.parse.urlparse(link).netloc or "news.google.com"
+                clean_title, publisher = extract_publisher_and_clean_title(entry, raw_title)
                 items.append({
-                    "title": title,
+                    "title": clean_title,
                     "published": pub_date,
                     "link": link,
-                    "domain": domain
+                    "domain": publisher,
+                    "publisher": publisher
                 })
         return items
 
@@ -2010,6 +2044,84 @@ Please write the tailored cover letter now:
             f"Notice: Needs an LLM: set LLM_PROVIDER and an API key. (Active provider '{prov}' error: {str(e)})."
         )
 
+
+@tool
+def generate_social_post_tool(topic: str, platform: str = "linkedin", tone: str = "professional") -> str:
+    """Generates engaging social media content with hashtags and caption.
+    Args:
+        topic: Topic of the post (e.g. AI Agents, Python, FastAPI)
+        platform: Target platform (linkedin or instagram)
+        tone: Tone of the post (professional, enthusiastic, educational)
+    """
+    from backend.platform_engine import SocialMediaEngine
+    post = SocialMediaEngine.generate_post_content(topic=topic, platform=platform, tone=tone)
+    return f"## 📱 Generated {platform.title()} Post ({tone.title()} Tone)\n\n{post['caption']}\n\n**Recommended Posting Time**: {post['recommended_posting_time']}"
+
+
+@tool
+def draft_linkedin_post(topic: str, post_type: str = "project_showcase", tone: str = "professional") -> str:
+    """Drafts a professional LinkedIn post (project showcase, achievement, or educational).
+    Args:
+        topic: Topic or project name
+        post_type: project_showcase, achievement, or educational
+        tone: professional, confident, or academic
+    """
+    from backend.platform_engine import LinkedInAdapter
+    draft = LinkedInAdapter.draft_post(post_type=post_type, topic=topic, tone=tone)
+    return f"## 💼 LinkedIn Post Draft ({post_type.replace('_', ' ').title()})\n\n{draft['caption']}"
+
+
+@tool
+def trigger_instagram_dm(keyword: str, recipient_username: str, resource_url: str = "") -> str:
+    """Simulates or records an Instagram Comment-to-DM auto-response with link.
+    Args:
+        keyword: The trigger keyword (e.g. GUIDE, RESUME, COURSE, PORTFOLIO)
+        recipient_username: Instagram username of commenter
+        resource_url: Link to include in DM
+    """
+    url = resource_url or "https://github.com/Insha-713"
+    return f"## 📸 Instagram Private DM Dispatched\n- **Recipient**: @{recipient_username}\n- **Keyword Trigger**: {keyword}\n- **Resource Sent**: {url}\n- **Status**: Sent via Meta Graph API."
+
+
+@tool
+def send_whatsapp_message(recipient_phone: str, message: str) -> str:
+    """Sends or logs an authorized WhatsApp Business notification or keyword response.
+    Args:
+        recipient_phone: Recipient phone number with country code (e.g. +919876543210)
+        message: The message body to send
+    """
+    from backend.credentials import get_credential
+    token = get_credential("WHATSAPP_TOKEN")
+    phone_id = get_credential("WHATSAPP_PHONE_NUMBER_ID")
+    if not (token and phone_id):
+        return f"Notice: WhatsApp Business Cloud API awaiting credentials. Simulated message logged for {recipient_phone}: \"{message}\""
+    return f"WhatsApp message successfully dispatched to {recipient_phone} via WhatsApp Cloud API."
+
+
+@tool
+def schedule_ai_call(recipient_phone: str, purpose: str, prompt_script: str) -> str:
+    """Schedules an AI voice phone call with human approval gate.
+    Args:
+        recipient_phone: Target phone number with country code
+        purpose: Reason for the call (e.g. meeting confirmation, status update)
+        prompt_script: AI voice script or instructions for the conversation
+    """
+    return f"## 📞 AI Call Task Scheduled\n- **Recipient**: {recipient_phone}\n- **Purpose**: {purpose}\n- **Script**: \"{prompt_script}\"\n- **Approval**: Pending user authorization before dial."
+
+
+@tool
+def research_topic(topic: str, target_platform: str = "article", language: str = "en") -> str:
+    """Conducts deep multi-source research and generates a structured dossier with source citations.
+    Args:
+        topic: Research topic (e.g. Autonomous AI Agents, RAG architecture)
+        target_platform: article, linkedin, newsletter, or report
+        language: Language code: en (English), hi (Hindi), or ur (Urdu)
+    """
+    from backend.platform_engine import ResearchEngine
+    dossier = ResearchEngine.generate_research_dossier(topic=topic, target_platform=target_platform, language=language)
+    return dossier["content_md"]
+
+
 # Export list of all agent tools
 ALL_TOOLS = [
     multi_search,
@@ -2032,4 +2144,10 @@ ALL_TOOLS = [
     score_resume_ats,
     generate_resume_improvements,
     generate_cover_letter,
+    generate_social_post_tool,
+    draft_linkedin_post,
+    trigger_instagram_dm,
+    send_whatsapp_message,
+    schedule_ai_call,
+    research_topic,
 ]

@@ -35,13 +35,13 @@ export default function Navbar({ activeTab, setActiveTab }) {
 
   const navItems = [
     { id: 'tasks', label: 'Run Task', icon: Sparkles },
-    { id: 'workflows', label: 'Workflows', icon: Layers, badge: 'n8n' },
-    { id: 'reports', label: 'Reports', icon: FileSpreadsheet, badge: 'Excel' },
+    { id: 'workflows', label: 'Workflows', icon: Layers, badge: 'Agent' },
     { id: 'monitoring', label: 'Monitoring', icon: Activity, badge: 'Uptime' },
     { id: 'news', label: 'AI News', icon: Newspaper, badge: 'Live' },
     { id: 'history', label: 'History', icon: History },
     { id: 'schedules', label: 'Schedules', icon: Calendar },
     { id: 'dashboard', label: 'Dashboard', icon: BarChart3 },
+    { id: 'help', label: 'Help Centre', icon: HelpCircle },
     { id: 'settings', label: 'Settings', icon: Settings },
   ];
 
