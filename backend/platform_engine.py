@@ -150,21 +150,36 @@ from backend.db import (
 class PublishingJobTracker:
     """Thread-safe tracking of multi-stage LinkedIn publishing operations."""
     _jobs: Dict[str, Dict[str, Any]] = {}
+    _idempotency_map: Dict[str, str] = {}
     _lock = threading.Lock()
 
     @classmethod
-    def create_job(cls, post_id: Optional[str] = None, dry_run: bool = False, job_id: Optional[str] = None) -> str:
+    def create_job(
+        cls,
+        post_id: Optional[str] = None,
+        dry_run: bool = False,
+        job_id: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
+        content_preview: str = "",
+        stage: str = "accepted",
+        message: str = "Publishing Request Accepted",
+        progress: int = 10,
+        status: str = "pending"
+    ) -> str:
         jid = job_id or f"pub_job_{uuid.uuid4().hex[:12]}"
         now = datetime.now().isoformat()
         with cls._lock:
+            if idempotency_key:
+                cls._idempotency_map[idempotency_key] = jid
             cls._jobs[jid] = {
                 "job_id": jid,
                 "post_id": post_id or "",
                 "dry_run": dry_run,
-                "stage": "validating_content",
-                "progress": 15,
-                "message": "Validating post structure, characters & Author URN...",
-                "status": "processing",
+                "stage": stage,
+                "progress": progress,
+                "message": message,
+                "status": status,
+                "content_preview": content_preview[:150] if content_preview else "",
                 "created_at": now,
                 "updated_at": now,
                 "result": None,
@@ -173,13 +188,29 @@ class PublishingJobTracker:
         return jid
 
     @classmethod
+    def get_job_by_idempotency_key(cls, key: str) -> Optional[Dict[str, Any]]:
+        with cls._lock:
+            jid = cls._idempotency_map.get(key)
+            if jid and jid in cls._jobs:
+                return dict(cls._jobs[jid])
+            return None
+
+    @classmethod
+    def get_active_job(cls) -> Optional[Dict[str, Any]]:
+        with cls._lock:
+            for job in reversed(list(cls._jobs.values())):
+                if job.get("status") in ("pending", "publishing", "processing", "accepted"):
+                    return dict(job)
+            return None
+
+    @classmethod
     def update_job(
         cls,
         job_id: str,
         stage: str,
         progress: int,
         message: str,
-        status: str = "processing",
+        status: str = "publishing",
         result: Optional[Dict[str, Any]] = None,
         error: Optional[str] = None
     ):
@@ -205,8 +236,8 @@ class PublishingJobTracker:
                     "message": message,
                     "status": status,
                     "updated_at": datetime.now().isoformat(),
-                    "result": result,
-                    "error": error
+                    "result": result if result is not None else cls._jobs[job_id].get("result"),
+                    "error": error if error is not None else cls._jobs[job_id].get("error")
                 })
 
     @classmethod
@@ -218,6 +249,8 @@ class PublishingJobTracker:
     def list_jobs(cls, limit: int = 10) -> List[Dict[str, Any]]:
         with cls._lock:
             items = list(cls._jobs.values())
+            items.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+            return items[:limit]
             items.sort(key=lambda x: x.get("created_at", ""), reverse=True)
             return items[:limit]
 
@@ -676,7 +709,8 @@ class LinkedInAdapter:
         media_path: Optional[str] = None,
         dry_run: bool = False,
         job_id: Optional[str] = None,
-        progress_callback: Optional[Callable[[str, int, str], None]] = None
+        progress_callback: Optional[Callable[[str, int, str], None]] = None,
+        mock_mode: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Publishes content to LinkedIn using official UGC Post API.
@@ -684,9 +718,9 @@ class LinkedInAdapter:
         Supports text-only posts, single image attachments via LinkedIn Assets API,
         and simulated verification in dry-run/mock mode.
         """
-        def notify(stage: str, progress: int, msg: str):
+        def notify(stage: str, progress: int, msg: str, status: str = "publishing", res: Optional[Dict[str, Any]] = None, err: Optional[str] = None):
             if job_id:
-                PublishingJobTracker.update_job(job_id, stage, progress, msg)
+                PublishingJobTracker.update_job(job_id, stage, progress, msg, status=status, result=res, error=err)
             if progress_callback:
                 try:
                     progress_callback(stage, progress, msg)
@@ -694,36 +728,32 @@ class LinkedInAdapter:
                     pass
 
         # 1. Content validation
-        notify("validating_content", 15, "Validating post structure, characters & Author URN...")
+        notify("preparing_post", 15, "Preparing Post")
         if not content or not str(content).strip():
             err = "Content is required for publishing to LinkedIn."
-            if job_id:
-                PublishingJobTracker.update_job(job_id, "failed", 100, err, status="failed", error=err)
+            notify("publishing_failed", 100, "Publishing Failed", status="failed", err=err)
             return {"success": False, "status": "failed", "error": err}
 
         content_clean = str(content).strip()
         if len(content_clean) > 3000:
             err = f"Post content exceeds LinkedIn limit of 3000 characters ({len(content_clean)} characters)."
-            if job_id:
-                PublishingJobTracker.update_job(job_id, "failed", 100, err, status="failed", error=err)
+            notify("publishing_failed", 100, "Publishing Failed", status="failed", err=err)
             return {"success": False, "status": "failed", "error": err}
 
         # 2. Credential validation
-        notify("verifying_credentials", 30, "Checking LinkedIn OAuth token & w_member_social scope...")
+        notify("preparing_post", 25, "Preparing Post")
         token = token or get_credential("LINKEDIN_ACCESS_TOKEN")
         author_urn = author_urn or get_credential("LINKEDIN_AUTHOR_URN")
 
         if not token:
             err = "Awaiting LinkedIn Access Token with 'w_member_social' scope. Configure your access token in Integrations Hub."
-            if job_id:
-                PublishingJobTracker.update_job(job_id, "failed", 100, err, status="failed", error=err)
+            notify("publishing_failed", 100, "Publishing Failed", status="failed", err=err)
             return {"success": False, "status": "awaiting_credentials", "error": err}
 
         from backend.credentials import is_masked_secret
         if is_masked_secret(token):
             err = "Invalid LinkedIn Access Token: Stored token contains masked characters ('••••'). Please enter your complete, unmasked OAuth access token in Integrations Hub."
-            if job_id:
-                PublishingJobTracker.update_job(job_id, "failed", 100, err, status="failed", error=err)
+            notify("publishing_failed", 100, "Publishing Failed", status="failed", err=err)
             return {"success": False, "status": "failed", "error": err}
 
         try:
@@ -731,22 +761,47 @@ class LinkedInAdapter:
             token_clean.encode("ascii")
         except UnicodeEncodeError:
             err = "Invalid LinkedIn Access Token: Token contains non-ASCII characters or bullet symbols. Please re-enter a valid token in Integrations Hub."
-            if job_id:
-                PublishingJobTracker.update_job(job_id, "failed", 100, err, status="failed", error=err)
+            notify("publishing_failed", 100, "Publishing Failed", status="failed", err=err)
             return {"success": False, "status": "failed", "error": err}
 
         # Validate Author URN format
         is_valid_urn, clean_author, urn_err = LinkedInAdapter.validate_author_urn(author_urn)
         if not is_valid_urn:
             err = f"Author URN Configuration Error: {urn_err}"
-            if job_id:
-                PublishingJobTracker.update_job(job_id, "failed", 100, err, status="failed", error=err)
+            notify("publishing_failed", 100, "Publishing Failed", status="failed", err=err)
             return {"success": False, "status": "failed", "error": err}
 
         # 3. Dry-Run / Mock Verification Check
         if dry_run:
-            notify("dispatching_post", 75, "Simulating LinkedIn UGC publication (dry-run mode)...")
-            notify("confirming_publication", 95, "Verifying simulated post publication...")
+            notify("preparing_post", 25, "Preparing Post")
+            if media_url or media_path:
+                notify("uploading_media", 55, "Uploading Media")
+
+            sim = (mock_mode or "").lower().strip()
+            if sim == "slow":
+                import time
+                time.sleep(0.8)
+                notify("publishing_to_linkedin", 75, "Publishing to LinkedIn")
+                time.sleep(0.8)
+                notify("confirming_publication", 90, "Confirming Publication")
+            elif sim == "timeout":
+                import time
+                notify("publishing_to_linkedin", 75, "Publishing to LinkedIn")
+                time.sleep(0.3)
+                err = "Publication Status Unknown: Request timed out while awaiting LinkedIn confirmation. Please check your LinkedIn feed to verify whether the post went live before attempting to publish again."
+                out = {"success": False, "status": "unknown", "error": err, "dry_run": True}
+                notify("publication_status_unknown", 100, "Publication Status Unknown", status="unknown", res=out, err=err)
+                return out
+            elif sim == "failure":
+                notify("publishing_to_linkedin", 75, "Publishing to LinkedIn")
+                err = "LinkedIn API returned 403 Forbidden: Missing 'w_member_social' permission."
+                out = {"success": False, "status": "failed", "error": err, "dry_run": True}
+                notify("publishing_failed", 100, "Publishing Failed", status="failed", res=out, err=err)
+                return out
+            else:
+                notify("publishing_to_linkedin", 75, "Publishing to LinkedIn")
+                notify("confirming_publication", 90, "Confirming Publication")
+
             mock_id = f"urn:li:ugcPost:mock_{uuid.uuid4().hex[:10]}"
             mock_url = f"https://www.linkedin.com/feed/update/{mock_id}"
             out = {
@@ -757,10 +812,9 @@ class LinkedInAdapter:
                 "platform": "linkedin",
                 "dry_run": True,
                 "published_at": datetime.now().isoformat(),
-                "message": f"Post verified & mock published successfully! Post ID: {mock_id}"
+                "message": f"Published Successfully! Post ID: {mock_id}"
             }
-            if job_id:
-                PublishingJobTracker.update_job(job_id, "completed", 100, f"Published successfully in dry-run mode (ID: {mock_id})", status="completed", result=out)
+            notify("published_successfully", 100, "Published Successfully", status="published", res=out)
             return out
 
         # 4. Construct Official LinkedIn UGC Post Payload
@@ -786,7 +840,7 @@ class LinkedInAdapter:
             "Content-Type": "application/json; charset=utf-8"
         }
 
-        notify("preparing_media", 55, "Connecting to LinkedIn API...")
+        notify("preparing_post", 40, "Preparing Post")
         try:
             import httpx
             with httpx.Client(timeout=15.0) as client:
@@ -803,7 +857,7 @@ class LinkedInAdapter:
                                 resolved_file = cand
 
                         if resolved_file and resolved_file.exists():
-                            notify("preparing_media", 65, "Registering image with LinkedIn Assets API...")
+                            notify("uploading_media", 55, "Uploading Media")
                             reg_payload = {
                                 "registerUploadRequest": {
                                     "recipes": ["urn:li:digitalmediaRecipe:feedshare-image"],
@@ -825,7 +879,7 @@ class LinkedInAdapter:
                                 asset_urn = reg_data.get("value", {}).get("asset")
 
                                 if upload_url and asset_urn:
-                                    notify("preparing_media", 70, "Uploading image binary to LinkedIn...")
+                                    notify("uploading_media", 65, "Uploading Media")
                                     with open(resolved_file, "rb") as img_f:
                                         img_bytes = img_f.read()
                                     up_headers = {
@@ -845,10 +899,10 @@ class LinkedInAdapter:
                     except Exception as img_err:
                         print(f"[LinkedInAdapter] Notice: Image upload exception, falling back to text: {img_err}")
 
-                notify("dispatching_post", 80, "Submitting post to LinkedIn UGC Post API...")
+                notify("publishing_to_linkedin", 75, "Publishing to LinkedIn")
                 res = client.post("https://api.linkedin.com/v2/ugcPosts", json=payload, headers=headers, timeout=15.0)
 
-                notify("confirming_publication", 95, "Verifying LinkedIn response...")
+                notify("confirming_publication", 90, "Confirming Publication")
                 if res.status_code in (200, 201):
                     data = {}
                     try:
@@ -865,10 +919,10 @@ class LinkedInAdapter:
                         "post_id": post_id,
                         "post_url": post_url,
                         "platform": "linkedin",
-                        "published_at": datetime.now().isoformat()
+                        "published_at": datetime.now().isoformat(),
+                        "message": f"Published Successfully! Post ID: {post_id}"
                     }
-                    if job_id:
-                        PublishingJobTracker.update_job(job_id, "completed", 100, f"Published successfully! Post ID: {post_id}", status="completed", result=out)
+                    notify("published_successfully", 100, "Published Successfully", status="published", res=out)
                     return out
 
                 if res.status_code == 401:
@@ -887,20 +941,19 @@ class LinkedInAdapter:
                     err = f"LinkedIn API returned HTTP {res.status_code}: {res.text[:300]}"
 
                 out = {"success": False, "status": "failed", "error": err, "status_code": res.status_code}
-                if job_id:
-                    PublishingJobTracker.update_job(job_id, "failed", 100, err, status="failed", error=err)
+                notify("publishing_failed", 100, "Publishing Failed", status="failed", res=out, err=err)
                 return out
 
         except httpx.TimeoutException:
-            err = "LinkedIn API request timed out after 15 seconds. The connection was aborted to prevent hanging."
-            if job_id:
-                PublishingJobTracker.update_job(job_id, "failed", 100, err, status="failed", error=err)
-            return {"success": False, "status": "timeout", "error": err}
+            err = "Publication Status Unknown: Request timed out while awaiting LinkedIn confirmation. The post may have been published. Please check your LinkedIn feed to verify whether the post went live before attempting to publish again."
+            out = {"success": False, "status": "unknown", "error": err}
+            notify("publication_status_unknown", 100, "Publication Status Unknown", status="unknown", res=out, err=err)
+            return out
         except Exception as e:
             err = f"Network exception calling LinkedIn API: {str(e)}"
-            if job_id:
-                PublishingJobTracker.update_job(job_id, "failed", 100, err, status="failed", error=err)
-            return {"success": False, "status": "failed", "error": err}
+            out = {"success": False, "status": "failed", "error": err}
+            notify("publishing_failed", 100, "Publishing Failed", status="failed", res=out, err=err)
+            return out
 
     @staticmethod
     def draft_comment_reply(post_snippet: str, commenter_name: str, tone: str = "professional") -> str:

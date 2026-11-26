@@ -13,3 +13,5 @@ scratch/
 TrackLink/
 *.key
 .credentials_key
+
+.vercel

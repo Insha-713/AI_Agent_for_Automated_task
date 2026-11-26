@@ -460,26 +460,147 @@ async def draft_linkedin_content(req: LinkedInDraftRequest):
     )
     return {"status": "success", "draft": draft, "post": draft, "draft_post": draft.get("content", "")}
 
+async def _execute_publishing_job(
+    job_id: str,
+    post_id: str,
+    content: str,
+    media_url: Optional[str],
+    dry_run: bool,
+    mock_mode: Optional[str] = None
+):
+    """Background task executing the multi-stage LinkedIn publishing workflow."""
+    try:
+        PublishingJobTracker.update_job(
+            job_id,
+            stage="preparing_post",
+            progress=25,
+            message="Preparing Post",
+            status="publishing"
+        )
+
+        res = await asyncio.to_thread(
+            LinkedInAdapter.publish_ugc_post,
+            content=content,
+            media_url=media_url,
+            dry_run=dry_run,
+            job_id=job_id,
+            mock_mode=mock_mode
+        )
+
+        # Sync final result to database
+        if res.get("status") == "published" or res.get("success"):
+            try:
+                await update_social_post_status(
+                    post_id=post_id,
+                    status="published",
+                    external_post_id=res.get("post_id", "")
+                )
+            except Exception as e:
+                print(f"[LinkedIn Background Worker] DB sync notice: {e}")
+        elif res.get("status") == "unknown":
+            try:
+                await update_social_post_status(
+                    post_id=post_id,
+                    status="unknown",
+                    error_message=res.get("error", "Publication status unknown")
+                )
+            except Exception as e:
+                print(f"[LinkedIn Background Worker] DB sync notice: {e}")
+        else:
+            try:
+                await update_social_post_status(
+                    post_id=post_id,
+                    status="failed",
+                    error_message=res.get("error", "Direct publishing failed")
+                )
+            except Exception as e:
+                print(f"[LinkedIn Background Worker] DB sync notice: {e}")
+
+    except Exception as exc:
+        err_msg = f"Unexpected background publishing error: {str(exc)}"
+        print(f"[LinkedIn Background Worker] Exception: {err_msg}")
+        PublishingJobTracker.update_job(
+            job_id,
+            stage="publishing_failed",
+            progress=100,
+            message="Publishing Failed",
+            status="failed",
+            error=err_msg
+        )
+        try:
+            await update_social_post_status(post_id=post_id, status="failed", error_message=err_msg)
+        except Exception:
+            pass
+
+
 @platform_router.post("/linkedin/publish")
 async def publish_direct_linkedin(payload: Dict[str, Any] = Body(...)):
     """
     Directly publishes provided text content to LinkedIn with optional single image attachment.
-    Supports dry_run/mock mode, records post in SQLite database, tracks progress via PublishingJobTracker,
-    and runs asynchronously without blocking the event loop.
+    Supports asynchronous background execution (default) returning job_id immediately,
+    as well as sync/wait mode for automated tests and legacy callers.
     """
     content = payload.get("content") or payload.get("caption", "")
-    if not content.strip():
+    if not content or not str(content).strip():
         raise HTTPException(status_code=400, detail="Content is required for publishing to LinkedIn")
+
+    content_clean = str(content).strip()
+    if len(content_clean) > 3000:
+        return {
+            "success": False,
+            "status": "failed",
+            "error": f"Post content exceeds LinkedIn limit of 3000 characters ({len(content_clean)} characters)."
+        }
 
     media_url = payload.get("media_url") or payload.get("image_url")
     dry_run = bool(payload.get("dry_run") or payload.get("mock"))
+    mock_mode = payload.get("mock_mode") or payload.get("simulate")
+    idempotency_key = payload.get("idempotency_key")
+    sync_mode = bool(payload.get("wait") or payload.get("sync") or payload.get("synchronous"))
+
+    # Check for active duplicate job by idempotency key
+    if idempotency_key:
+        existing_job = PublishingJobTracker.get_job_by_idempotency_key(idempotency_key)
+        if existing_job:
+            curr_status = existing_job.get("status")
+            if curr_status in ("pending", "publishing", "processing", "accepted"):
+                return {
+                    "success": True,
+                    "status": "already_running",
+                    "job_id": existing_job["job_id"],
+                    "post_id": existing_job["post_id"],
+                    "stage": existing_job.get("stage", "publishing"),
+                    "message": "A publishing request with this idempotency key is already in progress.",
+                    "dry_run": existing_job.get("dry_run", False)
+                }
+            elif curr_status in ("published", "completed"):
+                return {
+                    "success": True,
+                    "status": "already_running",
+                    "job_id": existing_job["job_id"],
+                    "post_id": existing_job["post_id"],
+                    "stage": existing_job.get("stage", "published_successfully"),
+                    "message": "A post with this idempotency key has already been published.",
+                    "result": existing_job.get("result"),
+                    "dry_run": existing_job.get("dry_run", False)
+                }
 
     # Generate unique IDs for tracking
     job_id = f"pub_job_{uuid.uuid4().hex[:10]}"
     post_id = f"post_{uuid.uuid4().hex[:10]}"
 
     # Initialize job in tracker
-    PublishingJobTracker.create_job(post_id=post_id, dry_run=dry_run, job_id=job_id)
+    PublishingJobTracker.create_job(
+        post_id=post_id,
+        dry_run=dry_run,
+        job_id=job_id,
+        idempotency_key=idempotency_key,
+        content_preview=content_clean,
+        stage="accepted",
+        message="Publishing Request Accepted",
+        progress=10,
+        status="pending"
+    )
 
     # Save post record in database immediately as 'publishing'
     try:
@@ -487,55 +608,85 @@ async def publish_direct_linkedin(payload: Dict[str, Any] = Body(...)):
             "id": post_id,
             "platform": "linkedin",
             "post_type": payload.get("post_type", "post"),
-            "content": content,
+            "content": content_clean,
             "caption": payload.get("caption", ""),
             "hashtags": payload.get("hashtags", []),
             "media_urls": [media_url] if media_url else [],
             "status": "publishing"
         })
     except Exception as dberr:
-        print(f"[LinkedIn Publish] Warning: Could not pre-save post record: {dberr}")
+        print(f"[LinkedIn Publish] Notice on pre-save post: {dberr}")
 
-    # Dispatch via non-blocking thread execution
-    res = await asyncio.to_thread(
-        LinkedInAdapter.publish_ugc_post,
-        content=content,
-        media_url=media_url,
-        dry_run=dry_run,
-        job_id=job_id
+    if sync_mode:
+        # Synchronous execution mode (for tests or callers requiring immediate completion)
+        await _execute_publishing_job(job_id, post_id, content_clean, media_url, dry_run, mock_mode)
+        job = PublishingJobTracker.get_job(job_id) or {}
+        res = job.get("result") or {}
+        if not res:
+            res = {
+                "success": job.get("status") == "published",
+                "status": job.get("status", "failed"),
+                "error": job.get("error"),
+                "post_id": job.get("result", {}).get("post_id", ""),
+                "post_url": job.get("result", {}).get("post_url", "")
+            }
+        res["job_id"] = job_id
+        res["post_db_id"] = post_id
+        return res
+
+    # Asynchronous background execution (default for frontend & robust workflow)
+    asyncio.create_task(
+        _execute_publishing_job(job_id, post_id, content_clean, media_url, dry_run, mock_mode)
     )
 
-    # Update database record with final outcome
-    if res.get("success"):
-        try:
-            await update_social_post_status(
-                post_id=post_id,
-                status="published",
-                external_post_id=res.get("post_id", "")
-            )
-        except Exception:
-            pass
-    else:
-        try:
-            await update_social_post_status(
-                post_id=post_id,
-                status="failed",
-                error_message=res.get("error", "Direct publishing failed")
-            )
-        except Exception:
-            pass
+    return {
+        "success": True,
+        "status": "accepted",
+        "stage": "accepted",
+        "progress": 10,
+        "job_id": job_id,
+        "post_id": post_id,
+        "post_db_id": post_id,
+        "message": "Publishing Request Accepted",
+        "dry_run": dry_run
+    }
 
-    res["post_db_id"] = post_id
-    res["job_id"] = job_id
-    return res
+@platform_router.get("/linkedin/active-job")
+async def get_active_linkedin_job():
+    """Returns the currently active publishing job if one is in progress."""
+    active = PublishingJobTracker.get_active_job()
+    return {"has_active_job": bool(active), "job": active}
 
 @platform_router.get("/linkedin/jobs/{job_id}")
 async def get_linkedin_job_status(job_id: str):
     """Fetches real-time multi-stage status for an ongoing or completed publishing job."""
     job = PublishingJobTracker.get_job(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail=f"Publishing job '{job_id}' not found")
-    return job
+    if job:
+        return job
+
+    # Fallback: check SQLite database if job was saved to DB but removed from memory
+    try:
+        posts = await list_social_posts(platform="linkedin", limit=15)
+        for p in posts:
+            if p.get("id") == job_id or (job_id in p.get("id", "")):
+                st = p.get("status", "unknown")
+                stage = "published_successfully" if st == "published" else ("publishing_failed" if st == "failed" else "accepted")
+                msg = "Published Successfully" if st == "published" else ("Publishing Failed" if st == "failed" else "Processing")
+                return {
+                    "job_id": job_id,
+                    "post_id": p.get("id"),
+                    "status": st,
+                    "stage": stage,
+                    "progress": 100 if st in ("published", "failed") else 50,
+                    "message": msg,
+                    "post_url": f"https://www.linkedin.com/feed/update/{p.get('external_post_id')}" if p.get("external_post_id") else "",
+                    "external_post_id": p.get("external_post_id", ""),
+                    "error": p.get("error_message")
+                }
+    except Exception:
+        pass
+
+    raise HTTPException(status_code=404, detail=f"Publishing job '{job_id}' not found")
 
 @platform_router.post("/linkedin/detect-member")
 async def detect_linkedin_member(payload: Dict[str, Any] = Body(default={})):

@@ -690,7 +690,7 @@ async def start_scheduler():
 
                 # 7. LinkedIn Auto-Generation Check (Autonomous daily researched content creation)
                 try:
-                    from backend.db import get_linkedin_preferences, list_social_posts
+                    from backend.db import get_linkedin_preferences
                     from backend.platform_engine import LinkedInContentEngine
                     prefs = await get_linkedin_preferences()
                     if prefs.get("auto_generate_daily"):

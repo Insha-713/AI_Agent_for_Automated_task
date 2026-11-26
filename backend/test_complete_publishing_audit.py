@@ -95,6 +95,7 @@ def run_tests():
     t6_payload = {
         "content": "Autonomous agents require deterministic error recovery and atomic state management.",
         "dry_run": True,
+        "sync": True,
         "post_type": "engineering_breakdown"
     }
     resp = client.post("/api/platform/linkedin/publish", json=t6_payload)
