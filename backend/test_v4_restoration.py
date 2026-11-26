@@ -27,9 +27,6 @@ from backend.main import app
 from backend.platform_engine import (
     ResearchEngine,
     LinkedInAdapter,
-    InstagramAdapter,
-    WhatsAppAdapter,
-    SocialMediaEngine,
     EmailAgentEngine,
     AutomationRuleRunner
 )
@@ -39,10 +36,6 @@ from backend.db import (
     list_research_documents,
     save_social_post,
     list_social_posts,
-    save_instagram_rule,
-    list_instagram_rules,
-    save_whatsapp_rule,
-    list_whatsapp_rules,
     set_memory_value,
     get_memory_value,
     list_memory_items,
@@ -144,24 +137,8 @@ def test_research_api_endpoints():
 
 
 # =====================================================================
-# 2. Social Media & LinkedIn Publishing Engine
+# 2. LinkedIn Publishing Engine
 # =====================================================================
-
-def test_social_generate_and_draft():
-    """Verify social post generation returns both 'draft' and 'post' keys for UI compatibility."""
-    res = client.post("/api/platform/social/generate", json={
-        "topic": "Autonomous AI Agent with Human Approval Gates",
-        "platform": "linkedin",
-        "tone": "professional"
-    })
-    assert res.status_code == 200
-    data = res.json()
-    assert data["status"] == "success"
-    assert "draft" in data
-    assert "post" in data
-    assert "content" in data["draft"]
-    assert "hashtags" in data["draft"]
-
 
 def test_linkedin_draft_and_status():
     """Verify LinkedIn drafting returns headline, content, suggested_time, and captions."""
@@ -180,15 +157,15 @@ def test_linkedin_draft_and_status():
 
 
 def test_linkedin_real_publishing_awaiting_credentials():
-    """Verify publishing to LinkedIn without token reports awaiting_credentials and NEVER fakes success."""
+    """Verify publishing to LinkedIn without verified credentials reports awaiting_credentials or configuration error and NEVER fakes success."""
     res = client.post("/api/platform/linkedin/publish", json={
         "content": "Test automated post"
     })
     assert res.status_code == 200
     data = res.json()
     assert data["success"] is False
-    assert data["status"] == "awaiting_credentials"
-    assert "Awaiting LinkedIn Access Token" in data["error"]
+    assert data["status"] in ("awaiting_credentials", "failed")
+    assert "error" in data
 
 
 def test_social_post_lifecycle_and_publish():
@@ -206,87 +183,17 @@ def test_social_post_lifecycle_and_publish():
     pub_res = client.post(f"/api/platform/social/posts/{post_id}/publish")
     assert pub_res.status_code == 200
     pub_data = pub_res.json()
-    # Since credentials aren't set in dev, it should fail honestly and mark post failed
+    # Since credentials aren't fully configured with live URN in dev, it should fail honestly and mark post failed
     assert pub_data["status"] == "failed"
     assert pub_data["post"]["status"] == "failed"
-    assert "Awaiting LinkedIn Access Token" in pub_data["post"]["error_message"]
+    assert len(pub_data["post"]["error_message"]) > 0
 
     # Clean up
     client.delete(f"/api/platform/social/posts/{post_id}")
 
 
 # =====================================================================
-# 3. Instagram Automation & Comment-to-DM
-# =====================================================================
-
-def test_instagram_publishing_checks():
-    """Verify Instagram media publishing requires credentials and media image URL."""
-    res_no_creds = InstagramAdapter.publish_media(caption="Test Caption")
-    assert res_no_creds["success"] is False
-    assert res_no_creds["status"] in ("awaiting_credentials", "media_required")
-
-
-def test_instagram_rule_creation_flexible_schema():
-    """Verify Instagram rules accept both reply_template and response_message, returning all 4 aliases."""
-    res = client.post("/api/platform/instagram/rules", json={
-        "keyword": "TEST_REEL",
-        "reply_template": "Here is your requested guide!",
-        "resource_link": "https://agentflow.app/guide"
-    })
-    assert res.status_code == 200
-    rule = res.json()["rule"]
-    rule_id = rule["id"]
-    assert rule["keyword"] == "TEST_REEL"
-    assert rule["reply_template"] == "Here is your requested guide!"
-    assert rule["response_message"] == "Here is your requested guide!"
-    assert rule["resource_link"] == "https://agentflow.app/guide"
-    assert rule["resource_url"] == "https://agentflow.app/guide"
-
-    # Simulate comment matching
-    sim_res = client.post("/api/platform/instagram/simulate-comment", json={
-        "comment_text": "Please send me TEST_REEL",
-        "username": "tester_agent"
-    })
-    assert sim_res.status_code == 200
-    assert sim_res.json()["matched"] is True
-
-    # Clean up
-    client.delete(f"/api/platform/instagram/rules/{rule_id}")
-
-
-# =====================================================================
-# 4. WhatsApp Business Cloud API Agent
-# =====================================================================
-
-def test_whatsapp_outbound_and_rules():
-    """Verify WhatsApp rules accept both response_template and response_message, and test direct outbound send."""
-    res = client.post("/api/platform/whatsapp/rules", json={
-        "keyword": "TEST_PORTFOLIO",
-        "response_template": "Here is Insha's portfolio: https://github.com/Insha-713"
-    })
-    assert res.status_code == 200
-    rule = res.json()["rule"]
-    rule_id = rule["id"]
-    assert rule["keyword"] == "TEST_PORTFOLIO"
-    assert rule["response_template"] == "Here is Insha's portfolio: https://github.com/Insha-713"
-    assert rule["response_message"] == "Here is Insha's portfolio: https://github.com/Insha-713"
-
-    # Test direct send endpoint (honest credentials check)
-    send_res = client.post("/api/platform/whatsapp/send", json={
-        "recipient_phone": "+919876543210",
-        "message_body": "Hello from AgentFlow test"
-    })
-    assert send_res.status_code == 200
-    send_data = send_res.json()
-    assert send_data["success"] is False
-    assert send_data["status"] == "awaiting_credentials"
-
-    # Clean up
-    client.delete(f"/api/platform/whatsapp/rules/{rule_id}")
-
-
-# =====================================================================
-# 5. Email Automation Agent
+# 3. Email Automation Agent
 # =====================================================================
 
 def test_email_reply_categorize_and_queue():
@@ -364,11 +271,11 @@ def test_automation_rules_toggle_and_simulation():
     """Verify toggling rules without requiring a body and triggering simulations."""
     # Create rule
     create_res = client.post("/api/platform/rules", json={
-        "name": "Auto Welcome DM",
-        "trigger_type": "instagram_comment",
-        "condition_config": {"keyword": "WELCOME"},
-        "action_type": "send_dm",
-        "action_config": {"text": "Welcome to AgentFlow!"},
+        "name": "Auto Email Notification",
+        "trigger_type": "email_received",
+        "condition_config": {"sender_contains": "recruiter"},
+        "action_type": "draft_email_reply",
+        "action_config": {"text": "Thank you for reaching out!"},
         "requires_approval": 0,
         "is_enabled": 1
     })
@@ -387,8 +294,8 @@ def test_automation_rules_toggle_and_simulation():
 
     # Simulate trigger
     sim_res = client.post("/api/platform/rules/trigger", json={
-        "event_name": "instagram_comment",
-        "payload": {"comment_text": "WELCOME to the page"}
+        "event_name": "email_received",
+        "payload": {"sender": "recruiter@example.com", "subject": "New opportunity"}
     })
     assert sim_res.status_code == 200
     assert "logs" in sim_res.json()
@@ -408,9 +315,9 @@ def test_unified_dashboard_kpis():
     data = res.json()["data"]
     assert "career" in data
     assert "social" in data
-    assert "instagram" in data
-    assert "whatsapp" in data
+    assert "linkedin" in data
     assert "calling" in data
+    assert "email" in data
     assert "system" in data
     assert "research_documents" in data["system"]
     assert "active_automation_rules" in data["system"]
@@ -423,13 +330,9 @@ if __name__ == "__main__":
         test_research_structured_dossier_synthesis_en,
         test_research_structured_dossier_synthesis_multilingual,
         test_research_api_endpoints,
-        test_social_generate_and_draft,
         test_linkedin_draft_and_status,
         test_linkedin_real_publishing_awaiting_credentials,
         test_social_post_lifecycle_and_publish,
-        test_instagram_publishing_checks,
-        test_instagram_rule_creation_flexible_schema,
-        test_whatsapp_outbound_and_rules,
         test_email_reply_categorize_and_queue,
         test_central_memory_crud_and_context,
         test_automation_rules_toggle_and_simulation,

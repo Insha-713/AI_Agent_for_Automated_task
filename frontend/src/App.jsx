@@ -20,15 +20,13 @@ const NewsPage = lazy(() => import('./pages/NewsPage'));
 const CareerPage = lazy(() => import('./pages/CareerPage'));
 
 // Platform specialized agents
-const SocialMediaPage = lazy(() => import('./pages/SocialMediaPage'));
 const LinkedInPage = lazy(() => import('./pages/LinkedInPage'));
-const InstagramPage = lazy(() => import('./pages/InstagramPage'));
-const WhatsAppPage = lazy(() => import('./pages/WhatsAppPage'));
 const CallingPage = lazy(() => import('./pages/CallingPage'));
 const EmailAgentPage = lazy(() => import('./pages/EmailAgentPage'));
 const ResearchPage = lazy(() => import('./pages/ResearchPage'));
 
 // Setup & Control
+const IntegrationsPage = lazy(() => import('./pages/IntegrationsPage'));
 const ConnectionsPage = lazy(() => import('./pages/ConnectionsPage'));
 const AutomationRulesPage = lazy(() => import('./pages/AutomationRulesPage'));
 const MemoryPage = lazy(() => import('./pages/MemoryPage'));
@@ -169,16 +167,13 @@ export default function App() {
 
                   {/* AI Agents Section */}
                   {activeTab === 'career' && <CareerPage onNavigate={handleNavigate} />}
-                  {activeTab === 'social' && <SocialMediaPage onNavigate={handleNavigate} />}
                   {activeTab === 'linkedin' && <LinkedInPage onNavigate={handleNavigate} />}
-                  {activeTab === 'instagram' && <InstagramPage onNavigate={handleNavigate} />}
-                  {activeTab === 'whatsapp' && <WhatsAppPage onNavigate={handleNavigate} />}
                   {activeTab === 'calling' && <CallingPage onNavigate={handleNavigate} />}
                   {activeTab === 'email_agent' && <EmailAgentPage onNavigate={handleNavigate} />}
                   {activeTab === 'research' && <ResearchPage onNavigate={handleNavigate} />}
 
                   {/* Setup & Control Section */}
-                  {(activeTab === 'connections' || activeTab === 'integrations') && <ConnectionsPage onNavigate={handleNavigate} />}
+                  {(activeTab === 'connections' || activeTab === 'integrations') && <IntegrationsPage onNavigate={handleNavigate} />}
                   {activeTab === 'rules' && <AutomationRulesPage onNavigate={handleNavigate} />}
                   {activeTab === 'memory' && <MemoryPage onNavigate={handleNavigate} />}
                   {activeTab === 'settings' && <SettingsPage onNavigate={handleNavigate} />}

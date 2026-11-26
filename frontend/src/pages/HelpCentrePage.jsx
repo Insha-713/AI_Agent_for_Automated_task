@@ -47,7 +47,7 @@ const HELP_SECTIONS = [
       'Success Rate: Calculates reliability percentage based on verified task and step completion.',
       'Active Schedules: Real-time counter of registered APScheduler background jobs and the upcoming execution time.',
       'Time Saved: Estimated hours and equivalent financial savings based on automated manual hours.',
-      'Quick Agent Launchpad: 1-click access to specialized agents (Career, Social Media, LinkedIn, WhatsApp, etc.).'
+      'Quick Agent Launchpad: 1-click access to specialized agents (Career, LinkedIn, AI Calling, Email Agent, etc.).'
     ],
     action: { label: 'Go to Dashboard', tab: 'dashboard' }
   },

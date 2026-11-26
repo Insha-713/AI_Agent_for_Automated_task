@@ -53,10 +53,7 @@ from backend.tools import (
     score_resume_ats,
     generate_resume_improvements,
     generate_cover_letter,
-    generate_social_post_tool,
     draft_linkedin_post,
-    trigger_instagram_dm,
-    send_whatsapp_message,
     schedule_ai_call,
     research_topic,
     WORKSPACE_PATH,
@@ -256,14 +253,6 @@ REGISTERED_TOOLS_META = {
         "required_credentials": [],
         "func": generate_cover_letter.func if hasattr(generate_cover_letter, "func") else generate_cover_letter,
     },
-    "generate_social_post_tool": {
-        "display_name": "Generate Social Media Content",
-        "description": "Generates engaging social media content with hashtags, captions, and optimal posting times for LinkedIn or Instagram.",
-        "params": {"topic": "str", "platform": "str", "tone": "str"},
-        "requires_approval": False,
-        "required_credentials": [],
-        "func": generate_social_post_tool.func if hasattr(generate_social_post_tool, "func") else generate_social_post_tool,
-    },
     "draft_linkedin_post": {
         "display_name": "Draft LinkedIn Post",
         "description": "Drafts professional LinkedIn posts (project showcase, achievement, or educational) with hashtags.",
@@ -272,28 +261,12 @@ REGISTERED_TOOLS_META = {
         "required_credentials": [],
         "func": draft_linkedin_post.func if hasattr(draft_linkedin_post, "func") else draft_linkedin_post,
     },
-    "trigger_instagram_dm": {
-        "display_name": "Trigger Instagram Comment-to-DM Response",
-        "description": "Sends or records a private Instagram DM response with resource link when a trigger keyword is commented.",
-        "params": {"keyword": "str", "recipient_username": "str", "resource_url": "str"},
-        "requires_approval": True,
-        "required_credentials": ["INSTAGRAM_ACCESS_TOKEN"],
-        "func": trigger_instagram_dm.func if hasattr(trigger_instagram_dm, "func") else trigger_instagram_dm,
-    },
-    "send_whatsapp_message": {
-        "display_name": "Send WhatsApp Business Message",
-        "description": "Sends an authorized message or keyword auto-response via WhatsApp Business Cloud API.",
-        "params": {"recipient_phone": "str", "message": "str"},
-        "requires_approval": True,
-        "required_credentials": ["WHATSAPP_TOKEN"],
-        "func": send_whatsapp_message.func if hasattr(send_whatsapp_message, "func") else send_whatsapp_message,
-    },
     "schedule_ai_call": {
         "display_name": "Schedule Outgoing AI Phone Call",
         "description": "Schedules an AI phone call task with speech prompt and captures conversation summary. Requires explicit human approval.",
         "params": {"recipient_phone": "str", "purpose": "str", "prompt_script": "str"},
         "requires_approval": True,
-        "required_credentials": ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_PHONE_NUMBER"],
+        "required_credentials": ["EXOTEL_API_KEY", "EXOTEL_API_TOKEN", "EXOTEL_ACCOUNT_SID", "EXOTEL_EXOPHONE"],
         "func": schedule_ai_call.func if hasattr(schedule_ai_call, "func") else schedule_ai_call,
     },
     "research_topic": {
@@ -1042,28 +1015,28 @@ def generate_fallback_plan(prompt: str) -> Dict[str, Any]:
             ]
         }
 
-    # 3. Social Media Multi-Platform Post Workflow
-    if any(w in p_lower for w in ["social media", "instagram post", "reel caption", "content calendar", "posts about"]):
-        topic = prompt.replace("create social media posts about", "").replace("social media", "").strip() or "Generative AI and Python"
+    # 3. LinkedIn Thought Leadership Post Workflow
+    if any(w in p_lower for w in ["linkedin post", "content calendar", "posts about", "thought leadership"]):
+        topic = prompt.replace("create linkedin posts about", "").replace("linkedin post", "").replace("thought leadership", "").strip() or "Generative AI and Python"
         return {
-            "title": "Social Media Content Studio",
-            "description": f"Generates engaging multi-platform social media posts with hashtags for '{topic}'.",
+            "title": "LinkedIn Thought Leadership Studio",
+            "description": f"Drafts professional LinkedIn thought leadership posts with hashtags for '{topic}'.",
             "steps": [
                 {
                     "id": "step_1",
-                    "tool": "generate_social_post_tool",
-                    "name": "Generate Social Media Content & Hashtags",
-                    "params": {"topic": topic, "platform": "linkedin", "tone": "professional"},
-                    "output_key": "social_post_draft",
+                    "tool": "draft_linkedin_post",
+                    "name": "Draft Professional LinkedIn Post",
+                    "params": {"topic": topic, "post_type": "project_showcase", "tone": "professional"},
+                    "output_key": "linkedin_post_draft",
                     "requires_approval": False,
                     "required_credentials": []
                 },
                 {
                     "id": "step_2",
                     "tool": "save_file",
-                    "name": "Save Content to workspace/social_content.txt",
-                    "params": {"filename": "social_content.txt", "content": "{{step_1_output}}", "overwrite": True},
-                    "output_key": "saved_social_file",
+                    "name": "Save Content to workspace/linkedin_post.txt",
+                    "params": {"filename": "linkedin_post.txt", "content": "{{step_1_output}}", "overwrite": True},
+                    "output_key": "saved_linkedin_file",
                     "requires_approval": False,
                     "required_credentials": []
                 }
@@ -1089,7 +1062,7 @@ def generate_fallback_plan(prompt: str) -> Dict[str, Any]:
                     },
                     "output_key": "call_task_details",
                     "requires_approval": True,
-                    "required_credentials": ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_PHONE_NUMBER"]
+                    "required_credentials": ["EXOTEL_API_KEY", "EXOTEL_API_TOKEN", "EXOTEL_ACCOUNT_SID", "EXOTEL_EXOPHONE"]
                 }
             ]
         }

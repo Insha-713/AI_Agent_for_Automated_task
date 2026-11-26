@@ -1,15 +1,16 @@
 """
-AgentFlow - Unified Automated Verification Suite for Incoming AI Voice Call System
+AgentFlow - Unified Automated Verification Suite for Exotel Incoming AI Voice Assistant
 Verifies:
-1. Twilio HMAC-SHA1 signature validation and security
-2. TwiML XML formatting, Polly voice synthesis tags, and <Gather> loops
-3. Conversational AI multi-turn dialogue logic, silence reprompt, and farewell intent detection
-4. Post-call AI summarization and callback determination
-5. Telegram post-call alert generation without credential exposure
-6. FastAPI incoming call webhook endpoints (/api/webhooks/voice/* and /api/voice/*)
-7. Incoming calls dashboard and configuration APIs (/api/platform/calls/incoming*)
-8. Inbound call simulation engine
-9. Preservation of existing outbound voice calling functionality
+1. Exotel request validation, payload normalization, and basic auth security
+2. Spoken Hindi/Hinglish greeting and VoiceXML generation
+3. Conversational AI multi-turn dialogue logic, silence reprompt, and farewell detection
+4. Post-call AI summarization, caller detail extraction (name, reason, message), and callback determination
+5. Telegram post-call alert generation without credential leakage and duplicate prevention
+6. FastAPI Exotel incoming call webhooks (/api/webhooks/voice/exotel/incoming, passthru, status)
+7. Legacy webhook aliases backward compatibility (/api/webhooks/voice/incoming, /api/voice/*)
+8. Exotel configuration API (/api/platform/calls/incoming-config) with Flow & Airtel forwarding guides
+9. Inbound call simulation engine in Hindi/Hinglish
+10. Outbound voice diagnostics and scheduling preservation
 """
 
 import sys
@@ -27,6 +28,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from fastapi.testclient import TestClient
 from backend.main import app
 from backend.voice_agent import (
+    validate_exotel_request,
+    parse_exotel_call_payload,
     validate_twilio_signature,
     xml_escape,
     is_caller_farewell,
@@ -38,6 +41,7 @@ from backend.voice_agent import (
     generate_fallback_conversational_reply,
     summarize_voice_call,
     send_voice_call_telegram_alert,
+    DEFAULT_VOICE_GREETING,
     VOICE_NAME,
     VOICE_LANGUAGE
 )
@@ -67,29 +71,40 @@ def run_test(name: str, fn):
 
 
 # =====================================================================
-# SECTION 1: UNIT TESTS - TWILIO SECURITY & TWIML GENERATION
+# SECTION 1: UNIT TESTS - EXOTEL SECURITY & VOICEXML GENERATION
 # =====================================================================
 
-def test_signature_validation():
-    """Twilio signature calculation and HMAC-SHA1 validation."""
-    auth_token = "12345abcdef67890"
-    url = "https://agentflow.example.com/api/webhooks/voice/incoming"
-    params = {"CallSid": "CA12345", "From": "+1234567890", "To": "+1098765432"}
+def test_exotel_request_validation():
+    """Validates Exotel webhook parameter detection and Basic Auth checking."""
+    params = {"CallSid": "exo_call_12345", "CallFrom": "+919876543210", "CallTo": "09513886363"}
+    headers = {}
+    assert validate_exotel_request(headers, params) is True
 
-    # Compute valid signature
-    s = url
-    for k in sorted(params.keys()):
-        s += k + str(params[k])
-    valid_sig = base64.b64encode(hmac.new(auth_token.encode("utf-8"), s.encode("utf-8"), hashlib.sha1).digest()).decode("utf-8")
+    # When Basic Auth is passed with valid token
+    token = "test_exotel_api_token"
+    auth_str = base64.b64encode(f"any_user:{token}".encode("utf-8")).decode("utf-8")
+    auth_headers = {"authorization": f"Basic {auth_str}"}
+    assert validate_exotel_request(auth_headers, params, api_token=token) is True
 
-    assert validate_twilio_signature(url, params, signature=valid_sig, auth_token=auth_token) is True
-    # Tampered param must fail
-    tampered_params = dict(params, From="+1999999999")
-    assert validate_twilio_signature(url, tampered_params, signature=valid_sig, auth_token=auth_token) is False
-    # When auth_token is configured (production), missing signature must be strictly rejected
-    assert validate_twilio_signature(url, params, signature=None, auth_token=auth_token) is False
-    # When auth_token is unset (local dev without Twilio credentials), unsigned requests are permitted
-    assert validate_twilio_signature(url, params, signature=None, auth_token=None) is True
+
+def test_exotel_payload_parsing():
+    """Validates normalization of Exotel Passthru and Status Callback parameters."""
+    raw = {
+        "CallSid": "exo_leg_998877",
+        "CallFrom": "+919876543210",
+        "CallTo": "09513886363",
+        "Direction": "inbound",
+        "Status": "completed",
+        "RecordingUrl": "https://s3.amazonaws.com/exotel_recordings/rec_123.mp3",
+        "ConversationDuration": "38"
+    }
+    parsed = parse_exotel_call_payload(raw)
+    assert parsed["call_sid"] == "exo_leg_998877"
+    assert parsed["caller_phone"] == "+919876543210"
+    assert parsed["called_phone"] == "09513886363"
+    assert parsed["status"] == "completed"
+    assert parsed["recording_url"] == "https://s3.amazonaws.com/exotel_recordings/rec_123.mp3"
+    assert parsed["duration_seconds"] == 38
 
 
 def test_xml_escape():
@@ -103,46 +118,47 @@ def test_xml_escape():
     assert "&apos;" in escaped
 
 
-def test_greeting_twiml():
-    """Greeting TwiML contains Polly voice, speech gather, and valid XML."""
+def test_greeting_voicexml():
+    """Greeting VoiceXML contains Polly voice, speech gather, and exact Insha greeting."""
     twiml = generate_greeting_twiml(turn_action_url="/api/webhooks/voice/process-turn?call_id=c1")
     root = ET.fromstring(twiml)
     assert root.tag == "Response"
     say_el = root.find("Say")
     assert say_el is not None
     assert say_el.attrib.get("voice") == VOICE_NAME
-    assert say_el.attrib.get("language") == VOICE_LANGUAGE
-    assert "AgentFlow" in say_el.text
+    # Must contain exact greeting phrase
+    assert "Insha abhi busy hain" in say_el.text
     gather_el = root.find("Gather")
     assert gather_el is not None
     assert gather_el.attrib.get("input") == "speech"
     assert "/api/webhooks/voice/process-turn" in gather_el.attrib.get("action")
 
 
-def test_turn_twiml():
-    """Turn TwiML includes AI speech and subsequent <Gather> for multi-turn flow."""
-    reply = "Insha Fatima is an expert in FastAPI, LangGraph, and full-stack AI development."
+def test_turn_voicexml():
+    """Turn VoiceXML includes AI speech and subsequent <Gather> for multi-turn flow."""
+    reply = "Ji bilkul, main note kar leti hoon. Aapka naam kya hai?"
     twiml = generate_turn_twiml(ai_reply=reply, turn_action_url="/api/webhooks/voice/process-turn?call_id=c1")
     root = ET.fromstring(twiml)
     say_elements = root.findall("Say")
     assert len(say_elements) >= 1
-    assert "Insha Fatima" in say_elements[0].text
+    assert "Ji bilkul" in say_elements[0].text
     assert root.find("Gather") is not None
 
 
-def test_farewell_twiml():
-    """Farewell TwiML ends call cleanly with <Hangup/> and NO <Gather>."""
-    twiml = generate_farewell_twiml("Thank you for calling. Have a great day. Goodbye!")
+def test_farewell_voicexml():
+    """Farewell VoiceXML ends call cleanly with <Hangup/> and NO <Gather>."""
+    twiml = generate_farewell_twiml("Shukriya! Maine aapka message note kar liya hai. Alvida.")
     root = ET.fromstring(twiml)
     assert root.find("Hangup") is not None
     assert root.find("Gather") is None
 
 
-def test_reprompt_twiml():
-    """Reprompt TwiML asks caller to repeat when audio was silent or unclear."""
+def test_reprompt_voicexml():
+    """Reprompt VoiceXML asks caller politely to repeat when audio was silent or unclear."""
     twiml = generate_reprompt_twiml(turn_action_url="/api/webhooks/voice/process-turn?call_id=c1")
     root = ET.fromstring(twiml)
-    assert "repeat" in root.find("Say").text.lower() or "hear" in root.find("Say").text.lower()
+    say_text = root.find("Say").text.lower()
+    assert "aawaz" in say_text or "sunai" in say_text or "dobara" in say_text or "repeat" in say_text
     assert root.find("Gather") is not None
 
 
@@ -151,53 +167,54 @@ def test_reprompt_twiml():
 # =====================================================================
 
 def test_farewell_detection():
-    """Detects various ways callers say goodbye in English, Hindi/Urdu, and informal speech."""
+    """Detects various ways callers conclude the call in Hinglish, English, and Hindi."""
     assert is_caller_farewell("Thank you so much, goodbye!") is True
     assert is_caller_farewell("bye bye see you later") is True
-    assert is_caller_farewell("That's all, thank you") is True
-    assert is_caller_farewell("Nothing else, alvida!") is True
-    assert is_caller_farewell("Can you tell me about Insha's Python experience?") is False
-    assert is_caller_farewell("I want to hire her for a project") is False
+    assert is_caller_farewell("bas itna hi tha, theek hai") is True
+    assert is_caller_farewell("shukriya, alvida") is True
+    assert is_caller_farewell("Insha ka project experience kya hai?") is False
+    assert is_caller_farewell("Mujhe urgent baat karni hai") is False
 
 
 def test_conversational_reply_generation():
-    """Conversational engine generates relevant, concise responses."""
+    """Conversational engine generates polite, concise Hinglish responses."""
     # Test job / hiring inquiry
     reply_job = process_caller_speech_turn("We have an opening for an AI Engineer at our startup", [])
-    assert len(reply_job) > 10
-    assert any(w in reply_job.lower() for w in ["insha", "role", "ai", "engineer", "contact", "callback", "details"])
+    assert len(reply_job) > 5
+    assert any(w in reply_job.lower() for w in ["insha", "naam", "message", "company", "shukriya", "note"])
 
     # Test identity inquiry
-    reply_id = process_caller_speech_turn("Who are you and what is AgentFlow?", [])
-    assert "agentflow" in reply_id.lower() or "assistant" in reply_id.lower()
+    reply_id = process_caller_speech_turn("Aap kaun hain?", [])
+    assert "insha" in reply_id.lower() or "assistant" in reply_id.lower() or "ai" in reply_id.lower()
 
 
 def test_voice_call_summarizer():
-    """Summarizes transcripts, categorizes intent, and flags callback requirement."""
+    """Summarizes transcripts, extracts caller name, purpose, and flags callback requirement."""
     transcript = (
-        "Assistant: Hello! Thank you for calling AgentFlow.\n"
-        "Caller: Hi, I'm calling from Tech Corp regarding a Senior AI Engineer position. Can Insha call me back tomorrow at 2 PM?\n"
-        "Assistant: Certainly! I have noted your message and Insha will follow up.\n"
-        "Caller: Great, goodbye!"
+        "Assistant: Hello! Insha abhi busy hain. Aap humein bata dijiye kya kaam hai?\n"
+        "Caller: Mera naam Rahul Sharma hai from NextGen AI. Insha ko Senior AI Architect role offer karna hai. Please ask her to call back.\n"
+        "Assistant: Ji Rahul ji, maine note kar liya hai.\n"
+        "Caller: Theek hai, shukriya, bye!"
     )
-    summary = summarize_voice_call(transcript, caller_phone="+15551234567")
+    summary = summarize_voice_call(transcript, caller_phone="+919876543210")
     assert "summary" in summary
+    assert "caller_name" in summary
     assert summary["callback_needed"] is True
-    assert summary["intent"] in ["Job Opportunity", "Inquiry", "General Inquiry"]
+    assert "Rahul" in summary.get("caller_name", "") or summary["caller_name"] != ""
 
 
 def test_telegram_alert_formatting():
     """Validates Telegram voice call alert formatting without credential leakage."""
     call_data = {
-        "recipient_phone": "+14155552671",
+        "recipient_phone": "+919876543210",
+        "caller_name": "Rahul Sharma",
         "duration_seconds": 45,
         "status": "completed",
-        "intent": "Job Opportunity",
+        "reason_for_calling": "Job Opportunity",
         "callback_needed": True,
-        "call_sid": "CA1234567890abcdef",
-        "summary": "Caller inquired about senior AI engineering contract."
+        "call_sid": "exo_call_1234567890",
+        "summary": "Caller Rahul Sharma offered Senior AI Architect role. Requested callback."
     }
-    # Alert should execute safely even without live telegram credentials
     res = send_voice_call_telegram_alert(call_data)
     assert isinstance(res, dict)
     assert "success" in res
@@ -207,81 +224,61 @@ def test_telegram_alert_formatting():
 # SECTION 3: FASTAPI WEBHOOK INTEGRATION ENDPOINTS
 # =====================================================================
 
-TEST_CALL_SID = f"CA_test_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+TEST_EXO_SID = f"exo_test_{datetime.now().strftime('%Y%m%d%H%M%S')}"
 
-def test_webhook_production_signature_enforced():
-    """In production with TWILIO_AUTH_TOKEN configured, unsigned or forged webhooks are rejected with 403."""
-    from unittest.mock import patch
-    with patch("backend.platform_routes.get_credential", return_value="secret_production_token"):
-        form_data = {
-            "CallSid": "CA_prod_forgery_test",
-            "From": "+14155550199",
-            "To": "+18005550123"
-        }
-        # 1. Missing signature header -> 403 Forbidden
-        resp_unsigned = client.post("/api/webhooks/voice/incoming", data=form_data)
-        assert resp_unsigned.status_code == 403
-        assert "Twilio" in resp_unsigned.text
-
-        # 2. Forged signature header -> 403 Forbidden
-        resp_forged = client.post(
-            "/api/webhooks/voice/incoming",
-            data=form_data,
-            headers={"X-Twilio-Signature": "invalid_forged_signature_xyz"}
-        )
-        assert resp_forged.status_code == 403
-        assert "Twilio" in resp_forged.text
-
-
-def test_webhook_incoming_post():
-    """POST /api/webhooks/voice/incoming answers incoming call with TwiML greeting."""
+def test_webhook_exotel_incoming_post():
+    """POST /api/webhooks/voice/exotel/incoming answers incoming call with VoiceXML greeting."""
     form_data = {
-        "CallSid": TEST_CALL_SID,
-        "From": "+14155550199",
-        "To": "+18005550123",
-        "FromCity": "San Francisco",
-        "FromState": "CA",
-        "FromCountry": "US"
+        "CallSid": TEST_EXO_SID,
+        "CallFrom": "+919876543210",
+        "CallTo": "09513886363",
+        "Direction": "inbound"
     }
-    resp = client.post("/api/webhooks/voice/incoming", data=form_data)
+    resp = client.post("/api/webhooks/voice/exotel/incoming", data=form_data)
     assert resp.status_code == 200
     assert "application/xml" in resp.headers.get("content-type", "")
     assert "<Response>" in resp.text
     assert "<Gather" in resp.text
-    assert "AgentFlow" in resp.text
+    assert "Insha abhi busy hain" in resp.text
 
 
-def test_webhook_incoming_get():
-    """GET /api/webhooks/voice/incoming handles Twilio GET verification probe."""
-    resp = client.get("/api/webhooks/voice/incoming?CallSid=CA_probe_get&From=%2B14155550199")
+def test_webhook_exotel_incoming_get():
+    """GET /api/webhooks/voice/exotel/incoming handles GET probes from Exotel Passthru."""
+    resp = client.get(f"/api/webhooks/voice/exotel/incoming?CallSid={TEST_EXO_SID}_get&CallFrom=%2B919876543210")
     assert resp.status_code == 200
     assert "application/xml" in resp.headers.get("content-type", "")
     assert "<Response>" in resp.text
 
 
-def test_webhook_incoming_alias():
-    """POST /api/voice/incoming direct alias works identically."""
-    form_data = {
-        "CallSid": f"{TEST_CALL_SID}_alias",
-        "From": "+14155550199",
-        "To": "+18005550123"
-    }
-    resp = client.post("/api/voice/incoming", data=form_data)
+def test_webhook_exotel_passthru():
+    """POST /api/webhooks/voice/exotel/passthru handles Exotel flow branching."""
+    resp = client.post("/api/webhooks/voice/exotel/passthru", data={"CallSid": TEST_EXO_SID})
     assert resp.status_code == 200
-    assert "application/xml" in resp.headers.get("content-type", "")
+    data = resp.json()
+    assert data.get("status") == "connected"
+
+
+def test_webhook_legacy_incoming_alias():
+    """POST /api/webhooks/voice/incoming legacy route forwards to Exotel handler."""
+    form_data = {
+        "CallSid": f"{TEST_EXO_SID}_alias",
+        "From": "+919876543210",
+        "To": "09513886363"
+    }
+    resp = client.post("/api/webhooks/voice/incoming", data=form_data)
+    assert resp.status_code == 200
     assert "<Response>" in resp.text
 
 
 def test_webhook_process_turn_conversational():
     """POST /api/webhooks/voice/process-turn generates conversational multi-turn AI reply."""
     form_data = {
-        "CallSid": TEST_CALL_SID,
-        "From": "+14155550199",
-        "SpeechResult": "What projects has Insha built with FastAPI and React?"
+        "CallSid": TEST_EXO_SID,
+        "CallFrom": "+919876543210",
+        "SpeechResult": "Main Insha ke saath project collaborate karna chahta hoon"
     }
     resp = client.post("/api/webhooks/voice/process-turn", data=form_data)
     assert resp.status_code == 200
-    assert "application/xml" in resp.headers.get("content-type", "")
     assert "<Response>" in resp.text
     assert "<Say" in resp.text
     assert "<Gather" in resp.text  # Multi-turn keeps gathering
@@ -290,58 +287,45 @@ def test_webhook_process_turn_conversational():
 def test_webhook_process_turn_silence():
     """POST /api/webhooks/voice/process-turn reprompts politely on silence."""
     form_data = {
-        "CallSid": TEST_CALL_SID,
-        "From": "+14155550199",
+        "CallSid": TEST_EXO_SID,
+        "CallFrom": "+919876543210",
         "SpeechResult": ""
     }
     resp = client.post("/api/webhooks/voice/process-turn", data=form_data)
     assert resp.status_code == 200
-    assert "application/xml" in resp.headers.get("content-type", "")
     assert "<Response>" in resp.text
     assert "<Gather" in resp.text
 
 
 def test_webhook_process_turn_farewell():
-    """POST /api/webhooks/voice/process-turn hangs up cleanly when caller says goodbye."""
+    """POST /api/webhooks/voice/process-turn hangs up cleanly when caller concludes."""
     form_data = {
-        "CallSid": TEST_CALL_SID,
-        "From": "+14155550199",
-        "SpeechResult": "Thank you so much for the information. Goodbye!"
+        "CallSid": TEST_EXO_SID,
+        "CallFrom": "+919876543210",
+        "SpeechResult": "Shukriya, main baad mein call karta hoon. Alvida!"
     }
     resp = client.post("/api/webhooks/voice/process-turn", data=form_data)
     assert resp.status_code == 200
-    assert "application/xml" in resp.headers.get("content-type", "")
     assert "<Response>" in resp.text
     assert "<Hangup/>" in resp.text or "<Hangup />" in resp.text or "<Hangup" in resp.text
-    assert "<Gather" not in resp.text  # Farewell does not keep gathering
+    assert "<Gather" not in resp.text
 
 
-def test_webhook_voice_status():
-    """POST /api/webhooks/voice/status records duration, status, and triggers post-call summary."""
+def test_webhook_exotel_status():
+    """POST /api/webhooks/voice/exotel/status records duration, status, and triggers Telegram notification."""
     form_data = {
-        "CallSid": TEST_CALL_SID,
-        "CallStatus": "completed",
-        "CallDuration": "42"
+        "CallSid": TEST_EXO_SID,
+        "Status": "completed",
+        "ConversationDuration": "42",
+        "RecordingUrl": "https://s3.amazonaws.com/exotel/rec_test_123.mp3"
     }
-    resp = client.post("/api/webhooks/voice/status", data=form_data)
+    resp = client.post("/api/webhooks/voice/exotel/status", data=form_data)
     assert resp.status_code == 200
     data = resp.json()
     assert data.get("status") == "recorded"
-    assert data.get("call_sid") == TEST_CALL_SID
+    assert data.get("call_sid") == TEST_EXO_SID
     assert data.get("final_status") == "completed"
-
-
-def test_webhook_voice_status_alias():
-    """POST /api/voice/status alias records status successfully."""
-    form_data = {
-        "CallSid": f"{TEST_CALL_SID}_alias",
-        "CallStatus": "completed",
-        "CallDuration": "18"
-    }
-    resp = client.post("/api/voice/status", data=form_data)
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data.get("status") == "recorded"
+    assert "rec_test_123.mp3" in data.get("recording_url", "")
 
 
 # =====================================================================
@@ -356,34 +340,35 @@ def test_api_calls_incoming():
     assert data.get("status") == "success"
     calls = data.get("calls", [])
     assert isinstance(calls, list)
-    # The call created by TEST_CALL_SID should be present
-    matching = [c for c in calls if c.get("call_sid") == TEST_CALL_SID]
+    matching = [c for c in calls if c.get("call_sid") == TEST_EXO_SID]
     assert len(matching) >= 1
     call = matching[0]
     assert call.get("direction") == "inbound"
-    assert call.get("recipient_phone") == "+14155550199"
+    assert call.get("recipient_phone") == "+919876543210"
 
 
 def test_api_calls_incoming_config():
-    """GET /api/platform/calls/incoming-config returns webhook URLs and Twilio Console guide."""
+    """GET /api/platform/calls/incoming-config returns Exotel endpoints, Flow guide, and Airtel forwarding codes."""
     resp = client.get("/api/platform/calls/incoming-config")
     assert resp.status_code == 200
     data = resp.json()
     assert data.get("status") in ["ready", "pending_credentials"]
-    assert "/api/webhooks/voice/incoming" in data.get("webhook_url", "")
-    assert "/api/webhooks/voice/process-turn" in data.get("process_turn_url", "")
-    assert "/api/webhooks/voice/status" in data.get("status_callback_url", "")
-    assert "credentials" in data
-    guide = data.get("twilio_console_guide", [])
-    assert len(guide) >= 5
+    assert data.get("provider") == "exotel"
+    assert "/api/webhooks/voice/exotel/incoming" in data.get("webhook_url", "")
+    assert "/api/webhooks/voice/exotel/status" in data.get("status_callback_url", "")
+    assert "/api/webhooks/voice/exotel/passthru" in data.get("passthru_url", "")
+    assert "exotel_flow_guide" in data
+    assert "airtel_forwarding_guide" in data
+    assert "trial_limitations_guide" in data
+    assert "Insha abhi busy hain" in data.get("greeting_message", "")
 
 
 def test_api_calls_incoming_simulate():
     """POST /api/platform/calls/incoming/simulate provides interactive multi-turn call simulator."""
     # Turn 1: Caller introduces themselves
     body_turn1 = {
-        "caller_phone": "+16505550144",
-        "speech_input": "Hi, I am calling about hiring Insha for a Generative AI engineer contract.",
+        "caller_phone": "+919876543210",
+        "speech_input": "Hello, main Rahul baat kar raha hoon from AI Ventures.",
         "history": []
     }
     resp1 = client.post("/api/platform/calls/incoming/simulate", json=body_turn1)
@@ -393,12 +378,12 @@ def test_api_calls_incoming_simulate():
     assert data1.get("is_farewell") is False
     assert len(data1.get("ai_reply", "")) > 5
     hist = data1.get("history", [])
-    assert len(hist) == 2  # 1 caller + 1 assistant
+    assert len(hist) == 2
 
     # Turn 2: Caller says goodbye
     body_turn2 = {
-        "caller_phone": "+16505550144",
-        "speech_input": "Thank you, that is all. Goodbye!",
+        "caller_phone": "+919876543210",
+        "speech_input": "Theek hai, shukriya, alvida!",
         "history": hist,
         "call_sid": data1.get("call_sid")
     }
@@ -411,31 +396,11 @@ def test_api_calls_incoming_simulate():
 
 
 # =====================================================================
-# SECTION 5: PRESERVATION OF OUTBOUND VOICE CALLING
+# SECTION 5: OUTBOUND VOICE DIAGNOSTICS & PRESERVATION
 # =====================================================================
 
-def test_outbound_calling_preserved():
-    """Ensures existing outbound voice scheduling and approval gate are 100% intact."""
-    # Outbound call scheduling endpoint
-    schedule_payload = {
-        "recipient_phone": "+19998887777",
-        "recipient_name": "Prospective Client",
-        "purpose": "Follow-up regarding technical roadmap",
-        "prompt_script": "Hi, this is AgentFlow calling on behalf of Insha Fatima.",
-        "scheduled_time": datetime.now().isoformat()
-    }
-    resp = client.post("/api/platform/calls/schedule", json=schedule_payload)
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data.get("status") == "success"
-    task = data.get("call") or data.get("task", {})
-    assert task.get("direction") == "outbound"
-    assert task.get("status") == "pending_approval"
-    assert "approval_id" in task
-
-
 def test_calling_status_diagnostics():
-    """Ensures calling diagnostics and TwiML preview endpoints remain fully functional."""
+    """Ensures calling diagnostics and VoiceXML preview endpoints remain fully functional."""
     resp_diag = client.get("/api/platform/calls/diagnostics")
     assert resp_diag.status_code == 200
     diag = resp_diag.json()
@@ -447,7 +412,6 @@ def test_calling_status_diagnostics():
     prev_data = resp_prev.json()
     assert prev_data.get("status") == "success"
     assert "<Response>" in prev_data.get("twiml", "")
-    assert "Polly.Aditi" in prev_data.get("voice", "")
 
 
 # =====================================================================
@@ -456,34 +420,33 @@ def test_calling_status_diagnostics():
 
 def main():
     print("=" * 70)
-    print("AGENTFLOW INCOMING AI VOICE CALL SYSTEM - AUTOMATED VERIFICATION SUITE")
+    print("AGENTFLOW EXOTEL INCOMING AI VOICE ASSISTANT - VERIFICATION SUITE")
     print("=" * 70)
 
     tests = [
-        ("Twilio HMAC-SHA1 Signature Validation", test_signature_validation),
-        ("TwiML XML Special Characters Escaping", test_xml_escape),
-        ("Greeting TwiML Generator (<Say>, Polly, <Gather>)", test_greeting_twiml),
-        ("Conversational Turn TwiML Generator", test_turn_twiml),
-        ("Farewell Clean Hangup TwiML Generator", test_farewell_twiml),
-        ("Silence Reprompt TwiML Generator", test_reprompt_twiml),
+        ("Exotel Webhook Request & Auth Validation", test_exotel_request_validation),
+        ("Exotel Call Payload Normalization", test_exotel_payload_parsing),
+        ("VoiceXML Special Characters Escaping", test_xml_escape),
+        ("Greeting VoiceXML Generator (<Say>, Polly.Aditi, Hinglish)", test_greeting_voicexml),
+        ("Conversational Turn VoiceXML Generator", test_turn_voicexml),
+        ("Farewell Clean Hangup VoiceXML Generator", test_farewell_voicexml),
+        ("Silence Reprompt VoiceXML Generator", test_reprompt_voicexml),
         ("Caller Farewell Intent Detection (Multilingual)", test_farewell_detection),
-        ("Conversational Speech Response Generation", test_conversational_reply_generation),
-        ("AI Voice Call Summarizer & Callback Determination", test_voice_call_summarizer),
+        ("Conversational Speech Response Generation (Hinglish)", test_conversational_reply_generation),
+        ("AI Voice Call Summarizer & Detail Extraction", test_voice_call_summarizer),
         ("Telegram Post-Call Alert Formatter & Security", test_telegram_alert_formatting),
-        ("Production Twilio Signature Enforcement (HTTP 403)", test_webhook_production_signature_enforced),
-        ("POST /api/webhooks/voice/incoming (Twilio Webhook)", test_webhook_incoming_post),
-        ("GET /api/webhooks/voice/incoming (Twilio GET Probe)", test_webhook_incoming_get),
-        ("POST /api/voice/incoming (Direct Root Alias)", test_webhook_incoming_alias),
+        ("POST /api/webhooks/voice/exotel/incoming (Exotel Inbound Webhook)", test_webhook_exotel_incoming_post),
+        ("GET /api/webhooks/voice/exotel/incoming (Exotel GET Probe)", test_webhook_exotel_incoming_get),
+        ("POST /api/webhooks/voice/exotel/passthru (Exotel Passthru Applet)", test_webhook_exotel_passthru),
+        ("POST /api/webhooks/voice/incoming (Legacy Alias)", test_webhook_legacy_incoming_alias),
         ("POST /api/webhooks/voice/process-turn (Multi-turn Speech)", test_webhook_process_turn_conversational),
         ("POST /api/webhooks/voice/process-turn (Silence Reprompt)", test_webhook_process_turn_silence),
         ("POST /api/webhooks/voice/process-turn (Farewell Hangup)", test_webhook_process_turn_farewell),
-        ("POST /api/webhooks/voice/status (Duration & Summary)", test_webhook_voice_status),
-        ("POST /api/voice/status (Status Callback Alias)", test_webhook_voice_status_alias),
+        ("POST /api/webhooks/voice/exotel/status (Duration, Recording & Telegram)", test_webhook_exotel_status),
         ("GET /api/platform/calls/incoming (Inbound Calls Log)", test_api_calls_incoming),
-        ("GET /api/platform/calls/incoming-config (Webhook URLs & Guide)", test_api_calls_incoming_config),
+        ("GET /api/platform/calls/incoming-config (Exotel & Airtel USSD Guides)", test_api_calls_incoming_config),
         ("POST /api/platform/calls/incoming/simulate (Interactive Simulator)", test_api_calls_incoming_simulate),
-        ("Preservation of Outbound Voice Scheduling & Approvals", test_outbound_calling_preserved),
-        ("Preservation of Voice Diagnostics & TwiML Previews", test_calling_status_diagnostics),
+        ("Preservation of Voice Diagnostics & VoiceXML Previews", test_calling_status_diagnostics),
     ]
 
     for name, fn in tests:

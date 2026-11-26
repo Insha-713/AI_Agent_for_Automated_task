@@ -18,16 +18,12 @@ import {
 } from 'lucide-react';
 
 const TRIGGER_EVENTS = [
-  { id: 'instagram_comment', label: 'Instagram Comment Received' },
-  { id: 'whatsapp_message', label: 'WhatsApp Inbound Message' },
   { id: 'email_received', label: 'High Priority Email Received' },
   { id: 'job_alert', label: 'Matching Job Opportunity Found' },
   { id: 'schedule_tick', label: 'Scheduled Timer Tick' }
 ];
 
 const ACTION_TARGETS = [
-  { id: 'send_instagram_dm', label: 'Dispatch Instagram Direct Message' },
-  { id: 'send_whatsapp_reply', label: 'Send WhatsApp Auto-Reply' },
   { id: 'draft_email_reply', label: 'Draft AI Email Response' },
   { id: 'schedule_ai_call', label: 'Schedule Outgoing Telephony Call' },
   { id: 'execute_workflow', label: 'Trigger Automated Multi-Step Workflow' }
@@ -43,14 +39,14 @@ export default function AutomationRulesPage() {
   // New Rule Form
   const [showAddForm, setShowAddForm] = useState(false);
   const [ruleName, setRuleName] = useState('');
-  const [triggerEvent, setTriggerEvent] = useState('instagram_comment');
-  const [conditionExpr, setConditionExpr] = useState("'GUIDE' in payload.get('comment_text', '').upper()");
-  const [actionTarget, setActionTarget] = useState('send_instagram_dm');
+  const [triggerEvent, setTriggerEvent] = useState('email_received');
+  const [conditionExpr, setConditionExpr] = useState("'urgent' in payload.get('subject', '').lower()");
+  const [actionTarget, setActionTarget] = useState('draft_email_reply');
   const [requiresApproval, setRequiresApproval] = useState(false);
 
   // Test Simulator Form
-  const [simEvent, setSimEvent] = useState('instagram_comment');
-  const [simPayload, setSimPayload] = useState('{\n  "comment_text": "Please send me the GUIDE!",\n  "commenter_username": "sarah_tech"\n}');
+  const [simEvent, setSimEvent] = useState('email_received');
+  const [simPayload, setSimPayload] = useState('{\n  "sender": "partner@techcorp.com",\n  "subject": "Urgent API integration review",\n  "importance": "high"\n}');
   const [isSimulating, setIsSimulating] = useState(false);
   const [simResult, setSimResult] = useState(null);
 
@@ -275,7 +271,7 @@ export default function AutomationRulesPage() {
                     type="text"
                     value={ruleName}
                     onChange={(e) => setRuleName(e.target.value)}
-                    placeholder="E.g. Auto-DM Resume on Instagram Comment"
+                    placeholder="E.g. Auto-Draft AI Reply on High Priority Email"
                     className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-white/10 text-xs text-white"
                   />
                 </div>

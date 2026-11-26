@@ -2046,19 +2046,6 @@ Please write the tailored cover letter now:
 
 
 @tool
-def generate_social_post_tool(topic: str, platform: str = "linkedin", tone: str = "professional") -> str:
-    """Generates engaging social media content with hashtags and caption.
-    Args:
-        topic: Topic of the post (e.g. AI Agents, Python, FastAPI)
-        platform: Target platform (linkedin or instagram)
-        tone: Tone of the post (professional, enthusiastic, educational)
-    """
-    from backend.platform_engine import SocialMediaEngine
-    post = SocialMediaEngine.generate_post_content(topic=topic, platform=platform, tone=tone)
-    return f"## 📱 Generated {platform.title()} Post ({tone.title()} Tone)\n\n{post['caption']}\n\n**Recommended Posting Time**: {post['recommended_posting_time']}"
-
-
-@tool
 def draft_linkedin_post(topic: str, post_type: str = "project_showcase", tone: str = "professional") -> str:
     """Drafts a professional LinkedIn post (project showcase, achievement, or educational).
     Args:
@@ -2069,33 +2056,6 @@ def draft_linkedin_post(topic: str, post_type: str = "project_showcase", tone: s
     from backend.platform_engine import LinkedInAdapter
     draft = LinkedInAdapter.draft_post(post_type=post_type, topic=topic, tone=tone)
     return f"## 💼 LinkedIn Post Draft ({post_type.replace('_', ' ').title()})\n\n{draft['caption']}"
-
-
-@tool
-def trigger_instagram_dm(keyword: str, recipient_username: str, resource_url: str = "") -> str:
-    """Simulates or records an Instagram Comment-to-DM auto-response with link.
-    Args:
-        keyword: The trigger keyword (e.g. GUIDE, RESUME, COURSE, PORTFOLIO)
-        recipient_username: Instagram username of commenter
-        resource_url: Link to include in DM
-    """
-    url = resource_url or "https://github.com/Insha-713"
-    return f"## 📸 Instagram Private DM Dispatched\n- **Recipient**: @{recipient_username}\n- **Keyword Trigger**: {keyword}\n- **Resource Sent**: {url}\n- **Status**: Sent via Meta Graph API."
-
-
-@tool
-def send_whatsapp_message(recipient_phone: str, message: str) -> str:
-    """Sends or logs an authorized WhatsApp Business notification or keyword response.
-    Args:
-        recipient_phone: Recipient phone number with country code (e.g. +919876543210)
-        message: The message body to send
-    """
-    from backend.credentials import get_credential
-    token = get_credential("WHATSAPP_TOKEN")
-    phone_id = get_credential("WHATSAPP_PHONE_NUMBER_ID")
-    if not (token and phone_id):
-        return f"Notice: WhatsApp Business Cloud API awaiting credentials. Simulated message logged for {recipient_phone}: \"{message}\""
-    return f"WhatsApp message successfully dispatched to {recipient_phone} via WhatsApp Cloud API."
 
 
 @tool
@@ -2144,10 +2104,7 @@ ALL_TOOLS = [
     score_resume_ats,
     generate_resume_improvements,
     generate_cover_letter,
-    generate_social_post_tool,
     draft_linkedin_post,
-    trigger_instagram_dm,
-    send_whatsapp_message,
     schedule_ai_call,
     research_topic,
 ]

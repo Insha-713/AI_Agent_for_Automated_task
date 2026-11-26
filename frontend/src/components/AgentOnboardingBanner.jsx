@@ -6,6 +6,7 @@ export default function AgentOnboardingBanner({
   requiredIntegration = "an integration",
   isConfigured = false,
   description = "",
+  buttonLabel = "Open Connections & Setup",
   onOpenConnections = () => {}
 }) {
   if (isConfigured) return null;
@@ -33,7 +34,7 @@ export default function AgentOnboardingBanner({
           className="flex items-center justify-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold bg-amber-500 hover:bg-amber-400 text-slate-950 shadow-md transition-all flex-shrink-0"
         >
           <Plug className="w-3.5 h-3.5" />
-          <span>Open Connections & Setup</span>
+          <span>{buttonLabel}</span>
           <ArrowRight className="w-3.5 h-3.5" />
         </button>
       </div>

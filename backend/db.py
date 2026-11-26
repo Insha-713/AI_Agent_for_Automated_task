@@ -148,7 +148,9 @@ async def get_db():
     else:
         import aiosqlite
         Path(DB_FILE).parent.mkdir(parents=True, exist_ok=True)
-        db = await aiosqlite.connect(DB_FILE)
+        db = await aiosqlite.connect(DB_FILE, timeout=30.0)
+        await db.execute("PRAGMA journal_mode = WAL;")
+        await db.execute("PRAGMA busy_timeout = 30000;")
         await db.execute("PRAGMA foreign_keys = ON;")
         db.row_factory = aiosqlite.Row
         try:
@@ -742,6 +744,12 @@ async def init_db():
             "next_run_at TEXT DEFAULT ''",
             "last_attempt_at TEXT DEFAULT ''",
             "publish_attempts INTEGER DEFAULT 0",
+            "research_summary TEXT DEFAULT ''",
+            "sources_json TEXT DEFAULT '[]'",
+            "quality_report_json TEXT DEFAULT '{}'",
+            "visual_prompt TEXT DEFAULT ''",
+            "image_provider TEXT DEFAULT ''",
+            "topic_angle TEXT DEFAULT ''",
         ]:
             try:
                 await db.execute(f"ALTER TABLE social_posts ADD COLUMN {col_def};")
@@ -844,6 +852,20 @@ async def init_db():
         for _sim_tbl in ("instagram_interactions", "whatsapp_conversations", "call_tasks"):
             try:
                 await db.execute(f"ALTER TABLE {_sim_tbl} ADD COLUMN is_simulation INTEGER DEFAULT 0;")
+            except Exception:
+                pass
+
+        # Exotel calling migrations for call_tasks
+        for _col_def in (
+            ("recording_url", "TEXT DEFAULT ''"),
+            ("telegram_alert_sent", "INTEGER DEFAULT 0"),
+            ("provider", "TEXT DEFAULT 'exotel'"),
+            ("caller_name", "TEXT DEFAULT ''"),
+            ("reason_for_calling", "TEXT DEFAULT ''"),
+            ("full_message", "TEXT DEFAULT ''")
+        ):
+            try:
+                await db.execute(f"ALTER TABLE call_tasks ADD COLUMN {_col_def[0]} {_col_def[1]};")
             except Exception:
                 pass
 
@@ -974,6 +996,18 @@ async def init_db():
                     INSERT INTO automation_rules (id, name, trigger_type, trigger_config_json, condition_config_json, action_type, action_config_json, requires_approval, is_enabled, last_run_at, run_count, created_at, updated_at)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, ar)
+        # Safe Startup Recovery: Reset any interrupted posts stuck in 'publishing' to 'failed'
+        # with an informative error message so they never hang indefinitely or block the queue.
+        try:
+            await db.execute("""
+                UPDATE social_posts
+                SET status = 'failed',
+                    error_message = 'Publishing was interrupted by a server restart or timeout; safely recovered to prevent duplicate execution.'
+                WHERE status = 'publishing';
+            """)
+        except Exception as rec_err:
+            print(f"[DB] Notice: Could not reset interrupted publishing posts: {rec_err}")
+
         await db.commit()
 
         cursor = await db.execute("SELECT COUNT(*) FROM templates;")
@@ -3260,6 +3294,29 @@ def _unpack_social_post(d: Dict[str, Any]) -> Dict[str, Any]:
     elif not isinstance(d.get("metrics"), dict):
         d["metrics"] = {}
 
+    sources = d.get("sources_json")
+    if isinstance(sources, str):
+        try:
+            d["sources"] = json.loads(sources or "[]")
+        except Exception:
+            d["sources"] = []
+    elif not isinstance(d.get("sources"), list):
+        d["sources"] = []
+
+    quality_rep = d.get("quality_report_json")
+    if isinstance(quality_rep, str):
+        try:
+            d["quality_report"] = json.loads(quality_rep or "{}")
+        except Exception:
+            d["quality_report"] = {}
+    elif not isinstance(d.get("quality_report"), dict):
+        d["quality_report"] = {}
+
+    d["research_summary"] = d.get("research_summary") or ""
+    d["visual_prompt"] = d.get("visual_prompt") or ""
+    d["image_provider"] = d.get("image_provider") or ""
+    d["topic_angle"] = d.get("topic_angle") or ""
+
     d["approval_required"] = bool(d.get("approval_required"))
     d["auto_publish"] = bool(d.get("auto_publish"))
     d["publish_attempts"] = int(d.get("publish_attempts") or 0)
@@ -3287,6 +3344,13 @@ async def save_social_post(post: Dict[str, Any]) -> Dict[str, Any]:
     publish_attempts = int(post.get("publish_attempts") or 0)
     last_attempt_at = post.get("last_attempt_at") or ""
 
+    research_summary = post.get("research_summary") or ""
+    sources = post.get("sources", []) if isinstance(post.get("sources"), list) else []
+    quality_report = post.get("quality_report", {}) if isinstance(post.get("quality_report"), dict) else {}
+    visual_prompt = post.get("visual_prompt") or ""
+    image_provider = post.get("image_provider") or ""
+    topic_angle = post.get("topic_angle") or ""
+
     # Normalize hashtags
     raw_ht = post.get("hashtags", [])
     if isinstance(raw_ht, str):
@@ -3301,8 +3365,9 @@ async def save_social_post(post: Dict[str, Any]) -> Dict[str, Any]:
                 status, scheduled_for, published_at, external_post_id, metrics_json,
                 error_message, timezone, frequency, start_date, end_date, approval_required,
                 approved_at, auto_publish, next_run_at, last_attempt_at, publish_attempts,
+                research_summary, sources_json, quality_report_json, visual_prompt, image_provider, topic_angle,
                 created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 platform = excluded.platform,
                 post_type = excluded.post_type,
@@ -3326,6 +3391,12 @@ async def save_social_post(post: Dict[str, Any]) -> Dict[str, Any]:
                 next_run_at = excluded.next_run_at,
                 last_attempt_at = excluded.last_attempt_at,
                 publish_attempts = excluded.publish_attempts,
+                research_summary = excluded.research_summary,
+                sources_json = excluded.sources_json,
+                quality_report_json = excluded.quality_report_json,
+                visual_prompt = excluded.visual_prompt,
+                image_provider = excluded.image_provider,
+                topic_angle = excluded.topic_angle,
                 updated_at = excluded.updated_at;
         """, (
             post_id,
@@ -3351,6 +3422,12 @@ async def save_social_post(post: Dict[str, Any]) -> Dict[str, Any]:
             next_run_at,
             last_attempt_at,
             publish_attempts,
+            research_summary,
+            json.dumps(sources),
+            json.dumps(quality_report),
+            visual_prompt,
+            image_provider,
+            topic_angle,
             post.get("created_at") or now_iso,
             now_iso
         ))
@@ -3502,6 +3579,89 @@ async def delete_social_post(post_id: str) -> bool:
         await db.execute("DELETE FROM social_posts WHERE id = ?;", (post_id,))
         await db.commit()
     return True
+
+
+# =====================================================================
+# LinkedIn Content Direction & Preferences
+# =====================================================================
+
+DEFAULT_LINKEDIN_PREFERENCES: Dict[str, Any] = {
+    "niche": "Artificial Intelligence, AI Agents, AI Automation, Machine Learning, AI Engineering, new AI tools, emerging technologies, practical projects, research developments, programming and real-world AI applications",
+    "topics": [
+        "Autonomous AI Agents & Multi-Agent Orchestration",
+        "Production AI Engineering & Low-Latency LLM Serving",
+        "Tool Calling, Function Invocation & Model Context Protocol (MCP)",
+        "Machine Learning Systems Architecture & Empirical Benchmarks",
+        "High-Performance Python Backend Architecture & Async Patterns",
+        "Deterministic Guardrails & Human-in-the-Loop Safety Gates",
+        "Open-Source AI Frameworks & Developer Tooling",
+        "Small Language Models (SLMs) & Edge Inference"
+    ],
+    "focus_areas": [
+        "Practical engineering takeaways from battle-tested production systems",
+        "System latency benchmarks, compute trade-offs, and failure mode analysis",
+        "Step-by-step technical implementation breakdowns",
+        "Concrete architectural patterns developers can adopt immediately"
+    ],
+    "avoid_topics": [
+        "Generic introductory AI explanations ('AI is transforming the future')",
+        "Repetitive motivational quotes and hustle culture fluff",
+        "Sensationalized AGI speculation and ungrounded tech hype",
+        "Fabricated personal test results or unsubstantiated benchmark claims",
+        "Generic top 5 listicles with no actionable engineering depth"
+    ],
+    "target_audience": "Software Engineers, AI Engineers, Tech Leads, Solutions Architects & Technology Builders",
+    "writing_style": "Analytical, practical, concise, and technically grounded (120-250 words)",
+    "content_goals": "Engineering authority, technical education, practical value delivery",
+    "posting_frequency": "daily_weekdays",
+    "preferred_format": "single_image",
+    "preferred_visual_style": "Modern Tech Architecture",
+    "auto_generate_daily": True,
+    "preferred_publishing_time": "09:00",
+    "timezone": "Asia/Kolkata",
+    "approval_required": False
+}
+
+async def get_linkedin_preferences() -> Dict[str, Any]:
+    """Retrieves user's content direction & preferences with authoritative defaults."""
+    async with get_db() as db:
+        cursor = await db.execute("SELECT value FROM user_settings WHERE key = 'linkedin_content_preferences' LIMIT 1;")
+        row = await cursor.fetchone()
+        if not row or not row[0]:
+            return dict(DEFAULT_LINKEDIN_PREFERENCES)
+        try:
+            stored = json.loads(row[0])
+            merged = dict(DEFAULT_LINKEDIN_PREFERENCES)
+            merged.update(stored)
+            return merged
+        except Exception:
+            return dict(DEFAULT_LINKEDIN_PREFERENCES)
+
+async def save_linkedin_preferences(prefs: Dict[str, Any]) -> Dict[str, Any]:
+    """Persists user's LinkedIn content direction and scheduling preferences."""
+    current = await get_linkedin_preferences()
+    current.update(prefs)
+    now_iso = datetime.now().isoformat()
+    async with get_db() as db:
+        await db.execute("""
+            INSERT INTO user_settings (key, value, updated_at) VALUES ('linkedin_content_preferences', ?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at;
+        """, (json.dumps(current), now_iso))
+        await db.commit()
+    return current
+
+async def get_recent_linkedin_history(limit: int = 30) -> List[Dict[str, Any]]:
+    """Fetches recent LinkedIn posts and drafts for anti-repetition and audit inspection."""
+    async with get_db() as db:
+        cursor = await db.execute("""
+            SELECT * FROM social_posts 
+            WHERE platform = 'linkedin'
+            ORDER BY created_at DESC 
+            LIMIT ?;
+        """, (limit,))
+        rows = await cursor.fetchall()
+        return [_unpack_social_post(dict(r)) for r in rows]
+
 
 
 # 2. Instagram Automation Rules & Interactions
@@ -3797,18 +3957,42 @@ async def list_call_tasks(status: Optional[str] = None, direction: Optional[str]
         rows = await cursor.fetchall()
         return [dict(r) for r in rows]
 
-async def update_call_task_status(call_id: str, status: str, outcome: str = "", summary: str = "", transcript: str = "", duration_seconds: int = 0) -> Optional[Dict[str, Any]]:
+async def update_call_task_status(
+    call_id: str,
+    status: str,
+    outcome: str = "",
+    summary: str = "",
+    transcript: str = "",
+    duration_seconds: int = 0,
+    recording_url: str = "",
+    caller_name: str = "",
+    reason_for_calling: str = "",
+    full_message: str = "",
+    telegram_alert_sent: Optional[int] = None,
+    provider: str = ""
+) -> Optional[Dict[str, Any]]:
     now_iso = datetime.now().isoformat()
     async with get_db() as db:
         await db.execute("""
             UPDATE call_tasks
-            SET status = ?, outcome = COALESCE(NULLIF(?, ''), outcome),
+            SET status = ?,
+                outcome = COALESCE(NULLIF(?, ''), outcome),
                 summary = COALESCE(NULLIF(?, ''), summary),
                 transcript = COALESCE(NULLIF(?, ''), transcript),
                 duration_seconds = CASE WHEN ? > 0 THEN ? ELSE duration_seconds END,
+                recording_url = COALESCE(NULLIF(?, ''), recording_url),
+                caller_name = COALESCE(NULLIF(?, ''), caller_name),
+                reason_for_calling = COALESCE(NULLIF(?, ''), reason_for_calling),
+                full_message = COALESCE(NULLIF(?, ''), full_message),
+                telegram_alert_sent = COALESCE(?, telegram_alert_sent),
+                provider = COALESCE(NULLIF(?, ''), provider),
                 updated_at = ?
             WHERE id = ?;
-        """, (status, outcome, summary, transcript, duration_seconds, duration_seconds, now_iso, call_id))
+        """, (
+            status, outcome, summary, transcript, duration_seconds, duration_seconds,
+            recording_url, caller_name, reason_for_calling, full_message, telegram_alert_sent, provider,
+            now_iso, call_id
+        ))
         await db.commit()
     return await get_call_task_by_id(call_id)
 
@@ -4179,34 +4363,26 @@ async def get_unified_dashboard_kpis() -> Dict[str, Any]:
         apps_res = await (await db.execute("SELECT COUNT(*) FROM job_applications;")).fetchone()
         prof_res = await (await db.execute("SELECT completeness_score FROM career_profiles WHERE id = 'default';")).fetchone()
 
-        # 2. Social Media metrics
+        # 2. LinkedIn / Social Media metrics
         social_res = await (await db.execute("SELECT COUNT(*), SUM(CASE WHEN status='scheduled' THEN 1 ELSE 0 END), SUM(CASE WHEN status='published' THEN 1 ELSE 0 END) FROM social_posts;")).fetchone()
 
-        # 3. Instagram metrics
-        ig_rules = await (await db.execute("SELECT COUNT(*) FROM instagram_automation_rules WHERE is_active=1;")).fetchone()
-        ig_int = await (await db.execute("SELECT COUNT(*) FROM instagram_interactions;")).fetchone()
-
-        # 4. WhatsApp metrics
-        wa_rules = await (await db.execute("SELECT COUNT(*) FROM whatsapp_automation_rules WHERE is_active=1;")).fetchone()
-        wa_msgs = await (await db.execute("SELECT COUNT(*) FROM whatsapp_conversations;")).fetchone()
-
-        # 5. Calling metrics
+        # 3. Calling metrics
         calls_res = await (await db.execute("SELECT COUNT(*), SUM(CASE WHEN status='pending_approval' THEN 1 ELSE 0 END), SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) FROM call_tasks;")).fetchone()
 
-        # 6. Email metrics
+        # 4. Email metrics
         email_res = await (await db.execute("SELECT COUNT(*), SUM(CASE WHEN status='sent' THEN 1 ELSE 0 END) FROM email_tasks;")).fetchone()
 
-        # 7. Approvals
+        # 5. Approvals
         appr_res = await (await db.execute("SELECT COUNT(*) FROM approvals WHERE decision = 'pending';")).fetchone()
 
-        # 8. Workflow executions today
+        # 6. Workflow executions today
         today_iso = datetime.now().strftime("%Y-%m-%d")
         runs_res = await (await db.execute("SELECT COUNT(*) FROM workflow_runs WHERE started_at LIKE ?;", (f"{today_iso}%",))).fetchone()
 
-        # 9. Research docs
+        # 7. Research docs
         res_docs = await (await db.execute("SELECT COUNT(*) FROM research_documents;")).fetchone()
 
-        # 10. Automation Rules
+        # 8. Automation Rules
         auto_rules_res = await (await db.execute("SELECT COUNT(*), SUM(CASE WHEN is_enabled=1 THEN 1 ELSE 0 END) FROM automation_rules;")).fetchone()
 
         return {
@@ -4215,18 +4391,15 @@ async def get_unified_dashboard_kpis() -> Dict[str, Any]:
                 "jobs_discovered": jobs_res[0] if jobs_res else 0,
                 "applications_tracked": apps_res[0] if apps_res else 0
             },
-            "social": {
+            "linkedin": {
                 "total_posts": social_res[0] or 0 if social_res else 0,
                 "scheduled": social_res[1] or 0 if social_res else 0,
                 "published": social_res[2] or 0 if social_res else 0
             },
-            "instagram": {
-                "active_rules": ig_rules[0] if ig_rules else 0,
-                "interactions_count": ig_int[0] if ig_int else 0
-            },
-            "whatsapp": {
-                "active_rules": wa_rules[0] if wa_rules else 0,
-                "messages_count": wa_msgs[0] if wa_msgs else 0
+            "social": {
+                "total_posts": social_res[0] or 0 if social_res else 0,
+                "scheduled": social_res[1] or 0 if social_res else 0,
+                "published": social_res[2] or 0 if social_res else 0
             },
             "calling": {
                 "total_calls": calls_res[0] or 0 if calls_res else 0,

@@ -599,7 +599,6 @@ async def start_scheduler():
         )
         from backend.platform_engine import (
             LinkedInAdapter, 
-            InstagramAdapter, 
             compute_next_occurrence
         )
 
@@ -654,12 +653,9 @@ async def start_scheduler():
                             content = f"{content}\n\n{ht_str}"
 
                     if plat == "linkedin":
-                        res = LinkedInAdapter.publish_ugc_post(content=content)
-                    elif plat == "instagram":
-                        res = InstagramAdapter.publish_media(
-                            caption=content,
-                            image_url=post.get("media_url")
-                        )
+                        media_urls = post.get("media_urls") or []
+                        media_url = media_urls[0] if media_urls else None
+                        res = await asyncio.to_thread(LinkedInAdapter.publish_ugc_post, content=content, media_url=media_url)
                     else:
                         res = {"success": False, "status": "unsupported", "error": f"Direct publishing not supported for '{plat}'"}
 
@@ -691,6 +687,37 @@ async def start_scheduler():
                         err_msg = res.get("error", "Autonomous scheduled publish failed")
                         await update_social_post_status(post_id, "failed", error_message=err_msg)
                         print(f"[Scheduler] Notice: Failed to auto-publish post {post_id} to {plat}: {err_msg}")
+
+                # 7. LinkedIn Auto-Generation Check (Autonomous daily researched content creation)
+                try:
+                    from backend.db import get_linkedin_preferences, list_social_posts
+                    from backend.platform_engine import LinkedInContentEngine
+                    prefs = await get_linkedin_preferences()
+                    if prefs.get("auto_generate_daily"):
+                        recent_posts = await list_social_posts(platform="linkedin", limit=5)
+                        should_generate = True
+                        if recent_posts:
+                            latest_post = recent_posts[0]
+                            created_str = latest_post.get("created_at")
+                            if created_str:
+                                try:
+                                    created_dt = datetime.fromisoformat(created_str.replace("Z", "+00:00"))
+                                    if created_dt.tzinfo is None:
+                                        created_dt = created_dt.replace(tzinfo=timezone.utc)
+                                    hours_diff = (now_utc - created_dt).total_seconds() / 3600.0
+                                    if hours_diff < 20.0:
+                                        should_generate = False
+                                except Exception:
+                                    pass
+                        if should_generate:
+                            print("[Scheduler] Auto-generating daily researched LinkedIn post based on user content direction...")
+                            auto_res = await LinkedInContentEngine.research_and_generate_complete_post(
+                                generate_image=True,
+                                auto_save_draft=True
+                            )
+                            print(f"[Scheduler] Daily post generated: {auto_res.get('post_id')}")
+                except Exception as auto_err:
+                    print(f"[Scheduler] Daily auto-generation notice: {auto_err}")
             except Exception as e:
                 print(f"[Scheduler] Social Media Publisher notice: {e}")
 

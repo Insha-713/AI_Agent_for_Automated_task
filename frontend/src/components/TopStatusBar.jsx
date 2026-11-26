@@ -30,6 +30,8 @@ export default function TopStatusBar({
       if (hRes.ok) {
         const hData = await hRes.json();
         setHealth(hData);
+      } else {
+        setHealth({ active_model: 'Offline', status: 'error' });
       }
     } catch (e) {
       setHealth({ active_model: 'Offline', status: 'error' });
@@ -55,8 +57,13 @@ export default function TopStatusBar({
 
   useEffect(() => {
     fetchStatus();
-    const interval = setInterval(fetchStatus, 30000);
-    return () => clearInterval(interval);
+    const interval = setInterval(fetchStatus, 8000);
+    const onFocus = () => fetchStatus();
+    window.addEventListener('focus', onFocus);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('focus', onFocus);
+    };
   }, []);
 
   const isBackendHealthy = health.status === 'healthy';

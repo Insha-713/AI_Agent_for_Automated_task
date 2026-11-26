@@ -16,10 +16,7 @@ import {
   Layers,
   ArrowRight,
   Briefcase,
-  Share2,
   Linkedin,
-  Instagram,
-  MessageCircle,
   PhoneCall,
   Mail,
   BookOpen,
@@ -149,10 +146,7 @@ export default function DashboardPage({ onNavigate = () => {} }) {
 
   const AGENT_LIST = [
     { id: 'career', label: 'Career Agent', icon: Briefcase, badge: 'v3.0' },
-    { id: 'social', label: 'Social Media', icon: Share2, badge: 'Studio' },
     { id: 'linkedin', label: 'LinkedIn', icon: Linkedin, badge: 'Active' },
-    { id: 'instagram', label: 'Instagram', icon: Instagram, badge: 'DM Bot' },
-    { id: 'whatsapp', label: 'WhatsApp', icon: MessageCircle, badge: '24/7' },
     { id: 'calling', label: 'AI Calling', icon: PhoneCall, badge: 'Voice' },
     { id: 'email_agent', label: 'Email Agent', icon: Mail, badge: 'Smart' },
     { id: 'research', label: 'Research', icon: BookOpen, badge: 'Dossier' },

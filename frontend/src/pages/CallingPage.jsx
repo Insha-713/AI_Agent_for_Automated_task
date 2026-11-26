@@ -19,7 +19,9 @@ import {
   Plug,
   Save,
   Trash2,
-  FileText
+  FileText,
+  Volume2,
+  ArrowRight
 } from 'lucide-react';
 import AgentOnboardingBanner from '../components/AgentOnboardingBanner';
 
@@ -34,18 +36,20 @@ export default function CallingPage({ onNavigate = () => {} }) {
   // Telephony & Config State
   const [telephonyConfig, setTelephonyConfig] = useState(null);
   const [isLoadingConfig, setIsLoadingConfig] = useState(false);
-  const [copiedWebhook, setCopiedWebhook] = useState(false);
+  const [copiedKey, setCopiedKey] = useState(null);
 
   // Voice Assistant Settings State
-  const [greetingMessage, setGreetingMessage] = useState('');
+  const [greetingMessage, setGreetingMessage] = useState(
+    'Hello! Insha abhi busy hain. Aap humein bata dijiye kya kaam hai? Main aapka message un tak pahuncha dungi.'
+  );
   const [voiceInstructions, setVoiceInstructions] = useState('');
-  const [voiceLanguage, setVoiceLanguage] = useState('en-IN');
+  const [voiceLanguage, setVoiceLanguage] = useState('hi-IN');
   const [telegramAlerts, setTelegramAlerts] = useState(true);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
 
   // Simulator State
-  const [simPhone, setSimPhone] = useState('+15559876543');
-  const [simSpeech, setSimSpeech] = useState('Hello! I am calling to ask about your technical architecture and project experience.');
+  const [simPhone, setSimPhone] = useState('+919876543210');
+  const [simSpeech, setSimSpeech] = useState('Hello, main Insha se project ke baare mein baat karna chahta hoon.');
   const [isSimulating, setIsSimulating] = useState(false);
   const [simResult, setSimResult] = useState(null);
 
@@ -54,6 +58,13 @@ export default function CallingPage({ onNavigate = () => {} }) {
   const showToast = (text, isErr = false) => {
     setStatusMessage({ type: isErr ? 'error' : 'success', text });
     setTimeout(() => setStatusMessage(null), 4000);
+  };
+
+  const copyToClipboard = (text, key) => {
+    if (!text) return;
+    navigator.clipboard.writeText(text);
+    setCopiedKey(key);
+    setTimeout(() => setCopiedKey(null), 2000);
   };
 
   const fetchIncomingCalls = async () => {
@@ -153,7 +164,7 @@ export default function CallingPage({ onNavigate = () => {} }) {
     }
   };
 
-  const isConfigured = telephonyConfig?.credentials?.twilio_configured;
+  const isConfigured = telephonyConfig?.credentials?.exotel_configured;
 
   return (
     <div className="space-y-6 max-w-7xl mx-auto px-4 sm:px-6 py-6">
@@ -166,14 +177,14 @@ export default function CallingPage({ onNavigate = () => {} }) {
               <PhoneIncoming className="w-5 h-5" />
             </span>
             <h1 className="text-xl sm:text-2xl font-bold font-display text-white">
-              AI Voice Calling <span className="text-amber-400">Incoming Assistant</span>
+              AI Voice Calling <span className="text-amber-400">Exotel Incoming Assistant</span>
             </h1>
             <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/30">
-              Twilio Voice &amp; LLM
+              Exotel Voice &amp; LLM
             </span>
           </div>
           <p className="text-xs sm:text-sm text-slate-400">
-            Automated AI receptionist that answers incoming phone calls, recognizes speech, conducts multi-turn conversations, and logs turn-by-turn transcripts.
+            Automated AI receptionist that answers incoming phone calls forwarded from your Airtel mobile number or dialed directly, conducts polite Hindi/Hinglish conversations, takes messages, and dispatches instant Telegram alerts.
           </p>
         </div>
 
@@ -200,7 +211,7 @@ export default function CallingPage({ onNavigate = () => {} }) {
                 : 'text-slate-400 hover:text-white'
             }`}
           >
-            Telephony &amp; Webhook
+            Exotel Setup &amp; Webhook
           </button>
           <button
             type="button"
@@ -232,9 +243,9 @@ export default function CallingPage({ onNavigate = () => {} }) {
       {!isConfigured && (
         <AgentOnboardingBanner
           agentName="AI Calling Agent"
-          requiredIntegration="Twilio Voice Telephony"
+          requiredIntegration="Exotel Telephony"
           isConfigured={false}
-          description="Connect your Twilio Account (Account SID, Auth Token & Phone Number) to receive live phone calls and generate TwiML."
+          description="Connect your Exotel Account (API Key, API Token, Account SID & trial ExoPhone) to activate live incoming calls."
           onOpenConnections={() => onNavigate('connections')}
         />
       )}
@@ -256,7 +267,7 @@ export default function CallingPage({ onNavigate = () => {} }) {
           <div className="flex items-center justify-between">
             <div>
               <h2 className="text-sm font-semibold text-white">Incoming Call Logs</h2>
-              <p className="text-xs text-slate-400">All genuine incoming phone calls with caller ID, duration, and transcripts</p>
+              <p className="text-xs text-slate-400">All inbound phone calls with caller ID, duration, AI summaries, and transcripts</p>
             </div>
             <button
               type="button"
@@ -275,7 +286,7 @@ export default function CallingPage({ onNavigate = () => {} }) {
               <PhoneCall className="w-8 h-8 text-slate-600 mx-auto" />
               <h3 className="text-sm font-semibold text-white">No incoming calls yet</h3>
               <p className="text-xs max-w-md mx-auto text-slate-500">
-                When someone calls your Twilio number, AgentFlow will answer, speak with them, and display the conversation here.
+                When someone calls your Exotel virtual number (or your forwarded Airtel phone), AgentFlow answers in Hinglish, captures their message, and logs the call here.
               </p>
               <div className="pt-2">
                 <button
@@ -297,6 +308,7 @@ export default function CallingPage({ onNavigate = () => {} }) {
                     <thead className="bg-white/5 border-b border-white/10 text-slate-400 text-[11px] uppercase font-mono">
                       <tr>
                         <th className="p-3">Caller Number</th>
+                        <th className="p-3">Caller Name</th>
                         <th className="p-3">Duration</th>
                         <th className="p-3">Status</th>
                         <th className="p-3">Time</th>
@@ -315,22 +327,31 @@ export default function CallingPage({ onNavigate = () => {} }) {
                           <td className="p-3 font-mono font-medium text-white">
                             <div className="flex items-center gap-2">
                               <span>{call.recipient_phone || 'Unknown'}</span>
-                              {call.is_simulation ? (
+                              {call.call_sid?.startsWith('sim_') ? (
                                 <span className="px-1.5 py-0.5 rounded text-[9px] font-mono font-medium bg-amber-500/20 text-amber-300 border border-amber-500/30">
                                   SIMULATOR
                                 </span>
                               ) : (
                                 <span className="px-1.5 py-0.5 rounded text-[9px] font-mono font-medium bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                                  GENUINE CALL
+                                  EXOTEL CALL
                                 </span>
                               )}
                             </div>
                           </td>
                           <td className="p-3 text-slate-300">
+                            {call.caller_name || 'Not provided'}
+                          </td>
+                          <td className="p-3 text-slate-300">
                             {call.duration_seconds || 0}s
                           </td>
                           <td className="p-3">
-                            <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold border ${
+                              call.status === 'completed'
+                                ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
+                                : call.status === 'missed'
+                                ? 'bg-amber-500/20 text-amber-300 border-amber-500/30'
+                                : 'bg-slate-800 text-slate-400 border-white/10'
+                            }`}>
                               {call.status}
                             </span>
                           </td>
@@ -342,7 +363,7 @@ export default function CallingPage({ onNavigate = () => {} }) {
                               type="button"
                               className="text-amber-400 hover:underline text-xs"
                             >
-                              View Transcript
+                              View Details
                             </button>
                           </td>
                         </tr>
@@ -358,8 +379,8 @@ export default function CallingPage({ onNavigate = () => {} }) {
                   <div className="glass-panel p-5 rounded-2xl border border-white/10 space-y-4">
                     <div className="flex items-center justify-between pb-3 border-b border-white/10">
                       <div>
-                        <h3 className="text-xs font-semibold text-white">Call Details &amp; AI Transcript</h3>
-                        <p className="text-[10px] text-slate-400 font-mono">ID: {selectedCall.id}</p>
+                        <h3 className="text-xs font-semibold text-white">Call Details &amp; Summary</h3>
+                        <p className="text-[10px] text-slate-400 font-mono">Call SID: {selectedCall.call_sid || selectedCall.id}</p>
                       </div>
                       <button
                         type="button"
@@ -370,11 +391,50 @@ export default function CallingPage({ onNavigate = () => {} }) {
                       </button>
                     </div>
 
+                    {/* Metadata Grid */}
+                    <div className="grid grid-cols-2 gap-2 text-xs">
+                      <div className="p-2.5 rounded-xl bg-slate-900 border border-white/10">
+                        <span className="text-[10px] text-slate-500 uppercase font-mono block">Caller Name</span>
+                        <span className="text-white font-medium">{selectedCall.caller_name || 'Not provided'}</span>
+                      </div>
+                      <div className="p-2.5 rounded-xl bg-slate-900 border border-white/10">
+                        <span className="text-[10px] text-slate-500 uppercase font-mono block">Reason for Calling</span>
+                        <span className="text-white font-medium">{selectedCall.reason_for_calling || selectedCall.outcome || 'General Inquiry'}</span>
+                      </div>
+                    </div>
+
                     {/* AI Summary */}
                     {selectedCall.summary && (
                       <div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs text-amber-200">
-                        <strong className="text-white block mb-0.5">AI Call Summary:</strong>
+                        <strong className="text-white block mb-0.5">AI Conversation Summary:</strong>
                         {selectedCall.summary}
+                      </div>
+                    )}
+
+                    {/* Full Message */}
+                    {selectedCall.full_message && selectedCall.full_message !== selectedCall.summary && (
+                      <div className="p-3 rounded-xl bg-slate-900 border border-white/10 text-xs text-slate-300">
+                        <strong className="text-white block mb-0.5">Caller&apos;s Message:</strong>
+                        {selectedCall.full_message}
+                      </div>
+                    )}
+
+                    {/* Call Recording */}
+                    {selectedCall.recording_url && (
+                      <div className="p-3 rounded-xl bg-cyan-950/30 border border-cyan-500/30 flex items-center justify-between">
+                        <div className="flex items-center gap-2 text-xs text-cyan-300">
+                          <Volume2 className="w-4 h-4 text-cyan-400" />
+                          <span>Call Audio Recording Available</span>
+                        </div>
+                        <a
+                          href={selectedCall.recording_url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-cyan-500 hover:bg-cyan-400 text-slate-950 flex items-center gap-1"
+                        >
+                          <ExternalLink className="w-3 h-3" />
+                          <span>Listen</span>
+                        </a>
                       </div>
                     )}
 
@@ -383,7 +443,7 @@ export default function CallingPage({ onNavigate = () => {} }) {
                       <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
                         Turn-by-Turn Transcript
                       </span>
-                      <div className="p-3 rounded-xl bg-slate-900 border border-white/10 space-y-2.5 max-h-72 overflow-y-auto">
+                      <div className="p-3 rounded-xl bg-slate-900 border border-white/10 space-y-2.5 max-h-64 overflow-y-auto">
                         {(() => {
                           try {
                             const turns = typeof selectedCall.transcript === 'string' 
@@ -400,7 +460,7 @@ export default function CallingPage({ onNavigate = () => {} }) {
                                   }`}
                                 >
                                   <div className="flex items-center justify-between text-[10px] text-slate-400 mb-0.5">
-                                    <strong className="capitalize">{t.role === 'assistant' ? 'AgentFlow Voice' : 'Caller'}</strong>
+                                    <strong className="capitalize">{t.role === 'assistant' ? 'AI Receptionist' : 'Caller'}</strong>
                                     <span>{t.timestamp || ''}</span>
                                   </div>
                                   <p>{t.text}</p>
@@ -422,17 +482,17 @@ export default function CallingPage({ onNavigate = () => {} }) {
         </div>
       )}
 
-      {/* TAB 2: TELEPHONY & WEBHOOK SETUP */}
+      {/* TAB 2: EXOTEL TELEPHONY & WEBHOOK SETUP */}
       {activeTab === 'setup' && (
         <div className="glass-panel p-6 rounded-2xl border border-white/10 space-y-5">
           <div className="flex items-center justify-between pb-3 border-b border-white/10">
             <div>
               <h2 className="text-sm font-semibold text-white flex items-center gap-2">
                 <ShieldCheck className="w-4 h-4 text-amber-400" />
-                <span>Twilio Incoming Voice Telephony Setup</span>
+                <span>Exotel Telephony &amp; Webhook Setup</span>
               </h2>
               <p className="text-xs text-slate-400 mt-0.5">
-                Connect your verified Twilio number so incoming calls trigger our autonomous voice assistant
+                Configure your Exotel virtual number (ExoPhone), call flow applets, and webhooks to activate AI call handling
               </p>
             </div>
             <span className={`px-2.5 py-1 rounded-full text-xs font-medium border ${
@@ -440,14 +500,19 @@ export default function CallingPage({ onNavigate = () => {} }) {
                 ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' 
                 : 'bg-slate-800 text-slate-400 border-white/10'
             }`}>
-              {isConfigured ? 'Connected' : 'Credentials Missing'}
+              {isConfigured ? 'Exotel Connected' : 'Credentials Missing'}
             </span>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          {/* Config Overview Cards */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div className="p-4 rounded-xl bg-slate-900 border border-white/10 space-y-1">
-              <span className="text-[10px] uppercase font-mono text-slate-500">Twilio Phone Number</span>
-              <p className="text-sm font-mono text-white">{telephonyConfig?.credentials?.twilio_phone_number || 'Not configured'}</p>
+              <span className="text-[10px] uppercase font-mono text-slate-500">Virtual Number (ExoPhone)</span>
+              <p className="text-sm font-mono text-white">{telephonyConfig?.phone_number || 'Not configured'}</p>
+            </div>
+            <div className="p-4 rounded-xl bg-slate-900 border border-white/10 space-y-1">
+              <span className="text-[10px] uppercase font-mono text-slate-500">Exotel Account SID</span>
+              <p className="text-sm font-mono text-white">{telephonyConfig?.account_sid || 'Not configured'}</p>
             </div>
             <div className="p-4 rounded-xl bg-slate-900 border border-white/10 space-y-1">
               <span className="text-[10px] uppercase font-mono text-slate-500">Telegram Notifications</span>
@@ -457,49 +522,104 @@ export default function CallingPage({ onNavigate = () => {} }) {
             </div>
           </div>
 
+          {/* Webhook Endpoints */}
           <div className="space-y-3">
+            <h4 className="text-xs font-bold text-white uppercase tracking-wider">Your Live Exotel Webhook Endpoints</h4>
+
             <div>
               <label className="block text-xs font-medium text-slate-400 mb-1">
-                Incoming Voice Webhook URL (TwiML Voice Endpoint)
+                Incoming Call / Passthru Webhook URL (Exotel Passthru Applet)
               </label>
               <div className="flex gap-2">
                 <input
                   type="text"
                   readOnly
-                  value={telephonyConfig?.webhook_url || '/api/webhooks/voice/incoming'}
+                  value={telephonyConfig?.webhook_url || '/api/webhooks/voice/exotel/incoming'}
                   className="flex-1 px-3 py-2 rounded-xl text-xs bg-slate-900 border border-white/10 text-cyan-300 font-mono"
                 />
                 <button
                   type="button"
-                  onClick={() => {
-                    navigator.clipboard.writeText(telephonyConfig?.webhook_url || '/api/webhooks/voice/incoming');
-                    setCopiedWebhook(true);
-                    setTimeout(() => setCopiedWebhook(false), 2000);
-                  }}
+                  onClick={() => copyToClipboard(telephonyConfig?.webhook_url || '/api/webhooks/voice/exotel/incoming', 'incoming')}
                   className="px-3 py-2 rounded-xl text-xs bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 flex items-center gap-1.5"
                 >
-                  {copiedWebhook ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                  <span>{copiedWebhook ? 'Copied' : 'Copy'}</span>
+                  {copiedKey === 'incoming' ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                  <span>{copiedKey === 'incoming' ? 'Copied' : 'Copy'}</span>
+                </button>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-slate-400 mb-1">
+                End-of-Call / Status Callback Webhook URL (For Recordings &amp; Telegram Alerts)
+              </label>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  readOnly
+                  value={telephonyConfig?.status_callback_url || '/api/webhooks/voice/exotel/status'}
+                  className="flex-1 px-3 py-2 rounded-xl text-xs bg-slate-900 border border-white/10 text-cyan-300 font-mono"
+                />
+                <button
+                  type="button"
+                  onClick={() => copyToClipboard(telephonyConfig?.status_callback_url || '/api/webhooks/voice/exotel/status', 'status')}
+                  className="px-3 py-2 rounded-xl text-xs bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 flex items-center gap-1.5"
+                >
+                  {copiedKey === 'status' ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                  <span>{copiedKey === 'status' ? 'Copied' : 'Copy'}</span>
                 </button>
               </div>
             </div>
           </div>
 
+          {/* Exotel Dashboard Setup Guide */}
           <div className="p-4 rounded-xl bg-slate-900/80 border border-white/10 space-y-2">
-            <h4 className="text-xs font-bold text-white uppercase tracking-wider">Twilio Console Setup Instructions</h4>
+            <h4 className="text-xs font-bold text-amber-400 uppercase tracking-wider">Exotel Dashboard Call Flow Setup</h4>
             <ol className="text-xs text-slate-300 space-y-1.5 list-decimal list-inside leading-relaxed">
-              {telephonyConfig?.twilio_console_guide?.map((step, idx) => (
+              {telephonyConfig?.exotel_flow_guide?.map((step, idx) => (
                 <li key={idx}>{step}</li>
               )) || (
                 <>
-                  <li>Log in to Twilio Console at console.twilio.com.</li>
-                  <li>Go to Phone Numbers &gt; Manage &gt; Active numbers &gt; Select your phone number.</li>
-                  <li>Under Voice Configuration &gt; &quot;A CALL COMES IN&quot;, set Webhook to HTTP POST.</li>
-                  <li>Enter the Incoming Voice Webhook URL from above.</li>
-                  <li>Click Save configuration.</li>
+                  <li>Log in to your Exotel Dashboard at https://my.exotel.com.</li>
+                  <li>Navigate to App Bazaar -&gt; Create Flow.</li>
+                  <li>Add a Passthru Applet set to HTTP POST pointing to your Incoming Call Webhook URL.</li>
+                  <li>Under Passthru Success branch, attach a Play or Record Applet to greet caller and record message.</li>
+                  <li>Set the Status Callback URL to the Status Callback Webhook URL.</li>
+                  <li>Save the Flow and assign your trial ExoPhone to it.</li>
                 </>
               )}
             </ol>
+          </div>
+
+          {/* Airtel Forwarding Guide */}
+          <div className="p-4 rounded-xl bg-slate-900/80 border border-white/10 space-y-2">
+            <h4 className="text-xs font-bold text-cyan-400 uppercase tracking-wider">Airtel Call Forwarding Setup (From Your Mobile)</h4>
+            <p className="text-xs text-slate-400">
+              To route calls from your personal Airtel SIM to your Exotel AI receptionist when you cannot answer, dial these USSD codes on your phone keypad:
+            </p>
+            <ul className="text-xs text-slate-300 space-y-1.5 list-disc list-inside font-mono">
+              {telephonyConfig?.airtel_forwarding_guide?.slice(1).map((step, idx) => (
+                <li key={idx}>{step}</li>
+              )) || (
+                <>
+                  <li>When Unanswered (25s): *61*{telephonyConfig?.phone_number || '&lt;Your-ExoPhone&gt;'}*11*25#</li>
+                  <li>When Busy: *67*{telephonyConfig?.phone_number || '&lt;Your-ExoPhone&gt;'}#</li>
+                  <li>When Unreachable: *62*{telephonyConfig?.phone_number || '&lt;Your-ExoPhone&gt;'}#</li>
+                  <li>All Conditional Forwarding: *004*{telephonyConfig?.phone_number || '&lt;Your-ExoPhone&gt;'}#</li>
+                  <li>Cancel All Forwarding: ##004#</li>
+                </>
+              )}
+            </ul>
+          </div>
+
+          {/* Free Trial Restrictions Notice */}
+          <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/30 space-y-2">
+            <h4 className="text-xs font-bold text-amber-300 uppercase tracking-wider">Exotel Free Trial Limitations &amp; PIN Requirements</h4>
+            <ul className="text-xs text-amber-200/90 space-y-1 list-disc list-inside">
+              <li>Free trial accounts provide a shared virtual number (ExoPhone) with demo credits valid for 15 days.</li>
+              <li><strong>Your Registered Number:</strong> Calls placed from your registered mobile number route directly to your flow without restrictions.</li>
+              <li><strong>External / Unknown Callers:</strong> Exotel trial requires callers from unregistered numbers to enter your 4-digit Account PIN before routing.</li>
+              <li>No paid plan or credit card upgrade is required for evaluation.</li>
+            </ul>
           </div>
 
           <div className="flex justify-end pt-2">
@@ -509,7 +629,7 @@ export default function CallingPage({ onNavigate = () => {} }) {
               className="px-4 py-2 rounded-xl text-xs font-semibold bg-amber-500 hover:bg-amber-400 text-slate-950 flex items-center gap-1.5"
             >
               <Plug className="w-3.5 h-3.5" />
-              <span>Configure Twilio Credentials in Connections</span>
+              <span>Configure Exotel Credentials in Connections</span>
             </button>
           </div>
         </div>
@@ -521,59 +641,61 @@ export default function CallingPage({ onNavigate = () => {} }) {
           <div>
             <h2 className="text-sm font-semibold text-white flex items-center gap-2">
               <Sparkles className="w-4 h-4 text-amber-400" />
-              <span>Voice Assistant Prompt &amp; Personality</span>
+              <span>Voice Receptionist Prompt &amp; Hindi/Hinglish Personality</span>
             </h2>
             <p className="text-xs text-slate-400 mt-0.5">
-              Customize how your AI receptionist answers, what it says, and its language model behavior
+              Customize your AI receptionist&apos;s spoken greeting, language, conversation rules, and Telegram alert settings
             </p>
           </div>
 
           <div className="space-y-4">
             <div>
               <label className="block text-xs font-medium text-slate-400 mb-1">
-                Initial Greeting Message (Spoken by Polly when call connects)
+                Initial Spoken Greeting (Plays immediately upon call connect)
               </label>
               <textarea
                 rows={2}
                 value={greetingMessage}
                 onChange={(e) => setGreetingMessage(e.target.value)}
-                placeholder="Hello! Thank you for calling. I am your AgentFlow AI voice assistant. How may I assist you today?"
+                placeholder="Hello! Insha abhi busy hain. Aap humein bata dijiye kya kaam hai? Main aapka message un tak pahuncha dungi."
                 className="w-full px-3 py-2.5 rounded-xl text-xs bg-slate-900 border border-white/10 text-white focus:outline-none focus:border-amber-500 resize-none"
               />
+              <span className="text-[10px] text-slate-500 mt-0.5 block">
+                Rule: Starts conversation politely in conversational Hinglish. Never says &quot;Namaste&quot;.
+              </span>
             </div>
 
             <div>
               <label className="block text-xs font-medium text-slate-400 mb-1">
-                Custom System Instructions &amp; Knowledge Base
+                Custom System Instructions &amp; Persona Boundaries
               </label>
               <textarea
                 rows={5}
                 value={voiceInstructions}
                 onChange={(e) => setVoiceInstructions(e.target.value)}
-                placeholder="Explain who you represent, the services offered, how to take messages, and guidelines for keeping spoken replies concise (1-2 sentences)..."
+                placeholder="You are Insha's AI assistant. Speak politely in natural Hinglish. Keep spoken replies under 2 sentences. Collect caller name, purpose, callback number, and message. Never make promises on Insha's behalf..."
                 className="w-full px-3 py-2.5 rounded-xl text-xs bg-slate-900 border border-white/10 text-white focus:outline-none focus:border-amber-500"
               />
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
-                <label className="block text-xs font-medium text-slate-400 mb-1">Voice Recognition Language</label>
+                <label className="block text-xs font-medium text-slate-400 mb-1">Voice Recognition &amp; TTS Language</label>
                 <select
                   value={voiceLanguage}
                   onChange={(e) => setVoiceLanguage(e.target.value)}
                   className="w-full px-3 py-2 rounded-xl text-xs bg-slate-900 border border-white/10 text-white focus:outline-none focus:border-amber-500"
                 >
-                  <option value="en-IN">English (India) - Polly.Aditi</option>
+                  <option value="hi-IN">Hindi (India) - Polly.Aditi (Female)</option>
+                  <option value="en-IN">English (India) - Polly.Aditi (Female)</option>
                   <option value="en-US">English (US) - Polly.Joanna</option>
-                  <option value="en-GB">English (UK) - Polly.Amy</option>
-                  <option value="hi-IN">Hindi (India) - Polly.Aditi</option>
                 </select>
               </div>
 
               <div className="flex items-center justify-between p-3 rounded-xl bg-slate-900 border border-white/10 mt-4 sm:mt-0">
                 <div>
                   <span className="text-xs font-medium text-white block">Telegram Call Alerts</span>
-                  <span className="text-[10px] text-slate-400">Send transcript &amp; summary on call end</span>
+                  <span className="text-[10px] text-slate-400">Send caller info &amp; AI summary on call completion</span>
                 </div>
                 <input
                   type="checkbox"
@@ -614,7 +736,7 @@ export default function CallingPage({ onNavigate = () => {} }) {
                 </span>
               </div>
               <p className="text-[11px] text-slate-400">
-                Simulate speech turns and evaluate AI spoken responses without making a real telephone call.
+                Test caller speech turns and verify AI spoken responses in Hindi/Hinglish without initiating a real phone call.
               </p>
 
               <form onSubmit={handleSimulateTurn} className="space-y-3">
@@ -628,12 +750,12 @@ export default function CallingPage({ onNavigate = () => {} }) {
                   />
                 </div>
                 <div>
-                  <label className="block text-[11px] font-medium text-slate-400 mb-1">Simulated Caller Speech</label>
+                  <label className="block text-[11px] font-medium text-slate-400 mb-1">Simulated Caller Speech (Hindi / Hinglish / English)</label>
                   <textarea
                     rows={3}
                     value={simSpeech}
                     onChange={(e) => setSimSpeech(e.target.value)}
-                    placeholder="E.g. What services does AgentFlow provide?"
+                    placeholder="Hello, main Insha se project ke baare mein baat karna chahta hoon."
                     className="w-full px-3 py-2 rounded-xl text-xs bg-slate-900 border border-white/10 text-white"
                   />
                 </div>
@@ -653,24 +775,33 @@ export default function CallingPage({ onNavigate = () => {} }) {
           <div className="lg:col-span-6 space-y-4">
             <div className="glass-panel p-5 rounded-2xl border border-white/10 space-y-3 min-h-[340px]">
               <span className="text-xs font-semibold text-white block pb-2 border-b border-white/10">
-                Generated Spoken Response &amp; TwiML
+                Generated Spoken Response &amp; AI Analysis
               </span>
 
               {simResult ? (
                 <div className="space-y-3">
                   <div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs">
                     <span className="text-[10px] font-bold uppercase tracking-wider text-amber-300 block mb-1">
-                      AI Spoken Reply (TTS Output)
+                      AI Spoken Reply (TTS Audio)
                     </span>
                     <p className="text-white text-xs leading-relaxed font-sans">
                       &quot;{simResult.ai_reply || simResult.response_text || 'Acknowledged.'}&quot;
                     </p>
                   </div>
 
+                  {simResult.summary && (
+                    <div className="p-3 rounded-xl bg-slate-900 border border-white/10 space-y-1.5 text-xs">
+                      <span className="text-[10px] font-mono text-slate-400 block uppercase">Extracted Details:</span>
+                      <p className="text-slate-300"><strong>Caller Name:</strong> {simResult.summary.caller_name || 'Not provided'}</p>
+                      <p className="text-slate-300"><strong>Reason:</strong> {simResult.summary.reason_for_calling || 'General'}</p>
+                      <p className="text-slate-300"><strong>Summary:</strong> {simResult.summary.summary || 'N/A'}</p>
+                    </div>
+                  )}
+
                   {simResult.twiml && (
                     <div className="space-y-1">
-                      <span className="text-[10px] font-mono text-slate-500">TwiML XML Payload:</span>
-                      <pre className="p-3 rounded-xl bg-slate-950 border border-white/10 text-[10px] text-cyan-300 font-mono overflow-x-auto max-h-48">
+                      <span className="text-[10px] font-mono text-slate-500">VoiceXML / TwiML Payload:</span>
+                      <pre className="p-3 rounded-xl bg-slate-950 border border-white/10 text-[10px] text-cyan-300 font-mono overflow-x-auto max-h-40">
                         {simResult.twiml}
                       </pre>
                     </div>
@@ -680,7 +811,7 @@ export default function CallingPage({ onNavigate = () => {} }) {
                 <div className="p-12 text-center text-slate-500 text-xs space-y-1">
                   <MessageSquare className="w-6 h-6 text-slate-600 mx-auto mb-1" />
                   <p>No simulation run yet.</p>
-                  <p className="text-[10px] text-slate-600">Enter a test caller question on the left and click Simulate.</p>
+                  <p className="text-[10px] text-slate-600">Enter a test caller question on the left and click Simulate Spoken Turn.</p>
                 </div>
               )}
             </div>

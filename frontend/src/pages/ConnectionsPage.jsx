@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { cleanAuthorUrnInput, isValidAuthorUrn } from '../utils/authorUrn';
 import { 
   Plug, 
   Sparkles, 
@@ -9,7 +10,6 @@ import {
   Key, 
   ShieldCheck, 
   Mail, 
-  Instagram, 
   MessageCircle, 
   PhoneCall, 
   Linkedin, 
@@ -29,8 +29,8 @@ import {
 
 const CATEGORY_TABS = [
   { id: 'all', label: 'All Connections' },
-  { id: 'social_media', label: 'Social Media', desc: 'LinkedIn, Instagram' },
-  { id: 'messaging', label: 'Messaging', desc: 'WhatsApp, Telegram' },
+  { id: 'social_media', label: 'Social Media', desc: 'LinkedIn' },
+  { id: 'messaging', label: 'Messaging', desc: 'Telegram' },
   { id: 'communication', label: 'Communication', desc: 'Email, AI Calling' },
   { id: 'ai_providers', label: 'AI Providers', desc: 'LLM, Image Engine' }
 ];
@@ -49,6 +49,9 @@ export default function ConnectionsPage({ onNavigate = () => {} }) {
   const [expandedCards, setExpandedCards] = useState({});
   const [toastMessage, setToastMessage] = useState(null);
   const [isPurging, setIsPurging] = useState(false);
+  const [detectingMember, setDetectingMember] = useState(false);
+  const [showMemberHelp, setShowMemberHelp] = useState(false);
+  const [memberDetectionResult, setMemberDetectionResult] = useState(null);
 
   const showToast = (msg, isErr = false) => {
     setToastMessage({ text: msg, isErr });
@@ -75,18 +78,6 @@ export default function ConnectionsPage({ onNavigate = () => {} }) {
                 initial.LINKEDIN_AUTHOR_URN = sVal.author_urn || '';
                 initial.LINKEDIN_CLIENT_ID = sVal.client_id || '';
                 initial.LINKEDIN_ACCESS_TOKEN = sVal.masked_access_token || '';
-              } else if (sKey === 'instagram') {
-                initial.INSTAGRAM_ACCOUNT_ID = sVal.account_id || '';
-                initial.META_APP_ID = sVal.app_id || '';
-                initial.INSTAGRAM_ACCESS_TOKEN = sVal.masked_access_token || '';
-                initial.INSTAGRAM_CALLBACK_URL = sVal.callback_url || '/api/webhooks/instagram';
-                initial.INSTAGRAM_WEBHOOK_VERIFY_TOKEN = sVal.verify_token || 'agentflow_v3_instagram_token';
-              } else if (sKey === 'whatsapp') {
-                initial.WHATSAPP_PHONE_NUMBER_ID = sVal.phone_number_id || '';
-                initial.WHATSAPP_WABA_ID = sVal.waba_id || '';
-                initial.WHATSAPP_ACCESS_TOKEN = sVal.masked_access_token || '';
-                initial.WHATSAPP_CALLBACK_URL = sVal.callback_url || '/api/webhooks/whatsapp';
-                initial.WHATSAPP_VERIFY_TOKEN = sVal.verify_token || 'agentflow_v3_whatsapp_token';
               } else if (sKey === 'telegram') {
                 initial.TELEGRAM_CHAT_ID = sVal.chat_id || '';
                 initial.TELEGRAM_BOT_TOKEN = sVal.masked_bot_token || '';
@@ -101,11 +92,14 @@ export default function ConnectionsPage({ onNavigate = () => {} }) {
                 initial.RESEND_API_KEY = sVal.masked_resend_key || '';
                 initial.BREVO_API_KEY = sVal.masked_brevo_key || '';
               } else if (sKey === 'calling') {
-                initial.TWILIO_PHONE_NUMBER = sVal.phone_number || '';
-                initial.TWILIO_ACCOUNT_SID = sVal.account_sid || '';
-                initial.TWILIO_AUTH_TOKEN = sVal.masked_auth_token || '';
-                initial.INCOMING_VOICE_WEBHOOK_URL = sVal.webhook_url || '/api/webhooks/voice/incoming';
-                initial.VOICE_GREETING_MESSAGE = sVal.greeting_message || '';
+                initial.EXOTEL_EXOPHONE = sVal.exophone || sVal.phone_number || '';
+                initial.EXOTEL_ACCOUNT_SID = sVal.account_sid || '';
+                initial.EXOTEL_API_KEY = sVal.api_key || '';
+                initial.EXOTEL_API_TOKEN = sVal.masked_api_token || sVal.masked_auth_token || '';
+                initial.EXOTEL_SUBDOMAIN = sVal.subdomain || 'api.exotel.com';
+                initial.EXOTEL_APP_ID = sVal.app_id || '';
+                initial.INCOMING_VOICE_WEBHOOK_URL = sVal.webhook_url || '/api/webhooks/voice/exotel/incoming';
+                initial.VOICE_GREETING_MESSAGE = sVal.greeting_message || 'Hello! Insha abhi busy hain. Aap humein bata dijiye kya kaam hai? Main aapka message un tak pahuncha dungi.';
               } else if (sKey === 'llm') {
                 initial.LLM_PROVIDER = sVal.provider || 'ollama';
                 initial.LLM_MODEL = sVal.model || 'qwen2.5:latest';
@@ -140,8 +134,44 @@ export default function ConnectionsPage({ onNavigate = () => {} }) {
     setFormValues(prev => ({ ...prev, [key]: val }));
   };
 
+  const handleAutoDetectLinkedInMember = async () => {
+    setDetectingMember(true);
+    setMemberDetectionResult(null);
+    try {
+      const res = await fetch('/api/platform/linkedin/detect-member', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: formValues.LINKEDIN_ACCESS_TOKEN || '' })
+      });
+      const data = await res.json();
+      setMemberDetectionResult(data);
+      if (data.success && data.author_urn) {
+        const cleaned = cleanAuthorUrnInput(data.author_urn);
+        handleInputChange('LINKEDIN_AUTHOR_URN', cleaned);
+        showToast(`Discovered member '${data.name}' (${cleaned})!`);
+      } else {
+        setShowMemberHelp(true);
+        if (data.status === 'scope_restricted') {
+          showToast('Token verified with w_member_social; auto-detect needs OpenID Connect.', true);
+        } else {
+          showToast(data.message || 'Auto-detection failed', true);
+        }
+      }
+    } catch (e) {
+      showToast(e.message || 'Auto-detection error', true);
+    } finally {
+      setDetectingMember(false);
+    }
+  };
+
   const toggleShowSecret = (fieldKey) => {
     setShowSecret(prev => ({ ...prev, [fieldKey]: !prev[fieldKey] }));
+  };
+
+  const isMaskedSecret = (val) => {
+    if (!val) return false;
+    const s = String(val);
+    return s.includes('•') || s.includes('\u2022') || s.startsWith('••••');
   };
 
   const handleSaveCredentials = async (serviceId, keysToSave) => {
@@ -150,10 +180,32 @@ export default function ConnectionsPage({ onNavigate = () => {} }) {
       const payload = {};
       keysToSave.forEach(k => {
         const val = formValues[k];
-        if (val !== undefined && val !== null && !String(val).startsWith('••••')) {
-          payload[k] = val;
+        if (val !== undefined && val !== null && !isMaskedSecret(val)) {
+          payload[k] = String(val).trim();
         }
       });
+
+      // Special validation and sanitization for LinkedIn Author URN
+      if (serviceId === 'linkedin' && payload.LINKEDIN_AUTHOR_URN) {
+        const cleaned = cleanAuthorUrnInput(payload.LINKEDIN_AUTHOR_URN);
+        payload.LINKEDIN_AUTHOR_URN = cleaned;
+        handleInputChange('LINKEDIN_AUTHOR_URN', cleaned);
+
+        const u = cleaned.toLowerCase();
+        if (u.includes('linkedin.com') || u.includes('http://') || u.includes('https://') || u.includes('/in/')) {
+          showToast('Invalid Author URN: Public profile URLs cannot be used. Enter your numeric Member ID (e.g. urn:li:person:1116653996).', true);
+          setShowMemberHelp(true);
+          setIsSaving(prev => ({ ...prev, [serviceId]: false }));
+          return;
+        }
+
+        if (!isValidAuthorUrn(cleaned)) {
+          showToast(`Invalid Author URN format: "${cleaned}". Must match "^urn:li:(person|organization):[0-9]+$" with numeric ID.`, true);
+          setShowMemberHelp(true);
+          setIsSaving(prev => ({ ...prev, [serviceId]: false }));
+          return;
+        }
+      }
 
       const res = await fetch('/api/platform/connections/save', {
         method: 'POST',
@@ -162,10 +214,18 @@ export default function ConnectionsPage({ onNavigate = () => {} }) {
       });
 
       if (res.ok) {
-        showToast(`Saved credentials for ${serviceId.toUpperCase()}`);
+        const resData = await res.json().catch(() => ({}));
+        const savedUrn = resData.cleaned_author_urn || payload.LINKEDIN_AUTHOR_URN;
+        if (savedUrn && serviceId === 'linkedin') {
+          handleInputChange('LINKEDIN_AUTHOR_URN', savedUrn);
+          showToast(`Saved LinkedIn credentials (Author URN: ${savedUrn})`);
+        } else {
+          showToast(`Saved credentials for ${serviceId.toUpperCase()}`);
+        }
         await fetchConnections();
       } else {
-        showToast('Failed to save credentials', true);
+        const errData = await res.json().catch(() => ({}));
+        showToast(errData.detail || 'Failed to save credentials', true);
       }
     } catch (e) {
       showToast(e.message || 'Error saving credentials', true);
@@ -182,16 +242,12 @@ export default function ConnectionsPage({ onNavigate = () => {} }) {
       if (serviceId === 'linkedin') {
         payload.token = formValues.LINKEDIN_ACCESS_TOKEN;
         payload.author_urn = formValues.LINKEDIN_AUTHOR_URN;
-      } else if (serviceId === 'instagram') {
-        payload.token = formValues.INSTAGRAM_ACCESS_TOKEN;
-        payload.account_id = formValues.INSTAGRAM_ACCOUNT_ID;
-      } else if (serviceId === 'whatsapp') {
-        payload.token = formValues.WHATSAPP_ACCESS_TOKEN;
-        payload.phone_id = formValues.WHATSAPP_PHONE_NUMBER_ID;
       } else if (serviceId === 'calling') {
-        payload.account_sid = formValues.TWILIO_ACCOUNT_SID;
-        payload.auth_token = formValues.TWILIO_AUTH_TOKEN;
-        payload.phone_number = formValues.TWILIO_PHONE_NUMBER;
+        payload.api_key = formValues.EXOTEL_API_KEY;
+        payload.api_token = formValues.EXOTEL_API_TOKEN;
+        payload.account_sid = formValues.EXOTEL_ACCOUNT_SID;
+        payload.phone_number = formValues.EXOTEL_EXOPHONE;
+        payload.subdomain = formValues.EXOTEL_SUBDOMAIN;
       } else if (serviceId === 'email') {
         payload.provider = formValues.EMAIL_PROVIDER || 'smtp';
       } else if (serviceId === 'telegram') {
@@ -418,16 +474,149 @@ export default function ConnectionsPage({ onNavigate = () => {} }) {
 
                     <div className="space-y-3">
                       <div>
-                        <label className="block text-[11px] font-medium text-slate-400 mb-1">
-                          Author URN (Person or Organization)
-                        </label>
+                        <div className="flex items-center justify-between mb-1">
+                          <label className="text-[11px] font-medium text-slate-400">
+                            Author URN (Member ID)
+                          </label>
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={handleAutoDetectLinkedInMember}
+                              disabled={detectingMember}
+                              className="text-[10px] text-blue-400 hover:text-blue-300 font-medium flex items-center gap-1 disabled:opacity-40 transition-colors"
+                            >
+                              <Sparkles className={`w-3 h-3 ${detectingMember ? 'animate-spin' : ''}`} />
+                              <span>{detectingMember ? 'Detecting...' : 'Auto-Detect via API'}</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setShowMemberHelp(!showMemberHelp)}
+                              className="text-[10px] text-cyan-400 hover:text-cyan-300 underline"
+                            >
+                              {showMemberHelp ? 'Hide Help' : 'How to find ID?'}
+                            </button>
+                          </div>
+                        </div>
+
                         <input
                           type="text"
-                          placeholder="urn:li:person:abcdef123 or urn:li:organization:987654"
+                          placeholder="e.g. 1116653996 or urn:li:person:1116653996"
                           value={formValues.LINKEDIN_AUTHOR_URN || ''}
                           onChange={(e) => handleInputChange('LINKEDIN_AUTHOR_URN', e.target.value)}
-                          className="w-full px-3 py-2 rounded-xl text-xs bg-slate-900 border border-white/10 text-white focus:outline-none focus:border-blue-500"
+                          onBlur={(e) => {
+                            const cleaned = cleanAuthorUrnInput(e.target.value);
+                            if (cleaned && cleaned !== e.target.value) {
+                              handleInputChange('LINKEDIN_AUTHOR_URN', cleaned);
+                            }
+                          }}
+                          onPaste={(e) => {
+                            e.preventDefault();
+                            const pasted = e.clipboardData.getData('text');
+                            const cleaned = cleanAuthorUrnInput(pasted);
+                            handleInputChange('LINKEDIN_AUTHOR_URN', cleaned);
+                          }}
+                          className={`w-full px-3 py-2 rounded-xl text-xs bg-slate-900 border font-mono focus:outline-none transition-colors ${
+                            (formValues.LINKEDIN_AUTHOR_URN || '').toLowerCase().includes('linkedin.com') || (formValues.LINKEDIN_AUTHOR_URN || '').toLowerCase().includes('/in/')
+                              ? 'border-rose-500 text-rose-200'
+                              : 'border-white/10 text-white focus:border-blue-500'
+                          }`}
                         />
+
+                        {/* Real-time Validation & Cleaned Preview Badge */}
+                        {(() => {
+                          const val = (formValues.LINKEDIN_AUTHOR_URN || '').trim();
+                          const valLower = val.toLowerCase();
+                          if (!val) {
+                            return (
+                              <p className="text-[10px] text-slate-400 mt-1">
+                                Enter your numeric Member ID or <code className="text-cyan-300">urn:li:person:&lt;id&gt;</code>. Plain text only (HTML and markdown are automatically stripped).
+                              </p>
+                            );
+                          }
+                          if (valLower.includes('http://') || valLower.includes('https://') || valLower.includes('linkedin.com') || valLower.includes('/in/')) {
+                            return (
+                              <div className="mt-1.5 p-2 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-300 text-[10px] flex items-start gap-1.5">
+                                <AlertCircle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5 text-rose-400" />
+                                <div>
+                                  <strong>Invalid Author URN:</strong> Public profile URLs (<code className="text-rose-200">https://www.linkedin.com/in/...</code>) cannot be used as an Author URN. Click <strong>"How to find ID?"</strong> above to find your internal numeric Member ID.
+                                </div>
+                              </div>
+                            );
+                          }
+
+                          const cleaned = cleanAuthorUrnInput(val);
+                          const isValid = isValidAuthorUrn(cleaned);
+                          const hadFormatting = cleaned !== val;
+
+                          if (isValid) {
+                            return (
+                              <div className="mt-1.5 space-y-0.5">
+                                <p className="text-[10px] text-emerald-400 mt-1 flex items-center gap-1 font-mono">
+                                  <CheckCircle2 className="w-3.5 h-3.5 flex-shrink-0 text-emerald-400" />
+                                  <span>Cleaned Author URN to save: <strong className="text-white bg-slate-800 px-1.5 py-0.5 rounded border border-white/10">{cleaned}</strong></span>
+                                </p>
+                                {hadFormatting && (
+                                  <p className="text-[10px] text-amber-300 font-mono">
+                                    ✓ Accidental markdown formatting and HTML entities stripped safely.
+                                  </p>
+                                )}
+                              </div>
+                            );
+                          }
+
+                          return (
+                            <div className="mt-1.5 p-2 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-300 text-[10px] flex items-start gap-1.5 font-mono">
+                              <AlertCircle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5 text-rose-400" />
+                              <div>
+                                <span>Cleaned: <strong className="text-white">{cleaned || val}</strong></span>
+                                <span className="block text-[10px] text-slate-400 mt-0.5">Must match pattern: ^urn:li:(person|organization):[0-9]+$ (numeric ID required)</span>
+                              </div>
+                            </div>
+                          );
+                        })()}
+
+                        {/* Expandable Member ID Help Guide */}
+                        {showMemberHelp && (
+                          <div className="mt-2.5 p-3 rounded-xl bg-slate-950/80 border border-cyan-500/20 text-[11px] text-slate-300 space-y-2.5">
+                            <div className="flex items-center justify-between font-semibold text-cyan-300 text-xs">
+                              <span className="flex items-center gap-1.5">
+                                <Sparkles className="w-3.5 h-3.5" />
+                                2 Ways to Get Your LinkedIn Member ID
+                              </span>
+                              <button 
+                                type="button"
+                                onClick={() => setShowMemberHelp(false)} 
+                                className="text-slate-400 hover:text-white text-[10px]"
+                              >
+                                ✕
+                              </button>
+                            </div>
+
+                            <div className="p-2.5 rounded-lg bg-white/5 border border-white/5 space-y-1">
+                              <p className="font-medium text-white text-[11px]">
+                                ⚡ Option 1: Find ID in Page Source (Takes 30 Seconds, No Portal Setup)
+                              </p>
+                              <ol className="list-decimal list-inside text-slate-300 space-y-0.5 pl-1 text-[10px]">
+                                <li>Open your LinkedIn profile in your browser (<code className="text-cyan-300">linkedin.com/in/...</code>).</li>
+                                <li>Right-click anywhere on the page and click <strong>View Page Source</strong> (or press <kbd className="bg-black/50 px-1 rounded">Ctrl+U</kbd>).</li>
+                                <li>Press <kbd className="bg-black/50 px-1 rounded">Ctrl+F</kbd> and search for: <code className="text-amber-300">urn:li:member:</code></li>
+                                <li>Copy the digits (e.g. <code className="text-emerald-300 font-mono">123456789</code>) and paste them into the box above.</li>
+                              </ol>
+                            </div>
+
+                            <div className="p-2.5 rounded-lg bg-white/5 border border-white/5 space-y-1">
+                              <p className="font-medium text-white text-[11px]">
+                                🔑 Option 2: Auto-Detect via OpenID Connect Product
+                              </p>
+                              <ol className="list-decimal list-inside text-slate-300 space-y-0.5 pl-1 text-[10px]">
+                                <li>Go to <a href="https://www.linkedin.com/developers/apps" target="_blank" rel="noreferrer" className="text-blue-400 hover:underline">LinkedIn Developer Portal</a> ➔ Select your App ➔ <strong>Products</strong> tab.</li>
+                                <li>Add the free product: <strong>"Sign In with LinkedIn using OpenID Connect"</strong> (instant 1-click access).</li>
+                                <li>In <strong>OAuth 2.0 Tools</strong>, generate a token with <code className="text-cyan-300">openid</code>, <code className="text-cyan-300">profile</code>, and <code className="text-cyan-300">w_member_social</code>.</li>
+                                <li>Paste the token below and click <strong>Auto-Detect via API</strong>.</li>
+                              </ol>
+                            </div>
+                          </div>
+                        )}
                       </div>
 
                       <div>
@@ -499,130 +688,6 @@ export default function ConnectionsPage({ onNavigate = () => {} }) {
                   </div>
                 )}
 
-                {/* Instagram Card */}
-                {connectionsData.social_media.instagram && (
-                  <div className="glass-panel p-5 sm:p-6 rounded-2xl border border-white/10 space-y-4">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="flex items-center gap-3">
-                        <span className="p-2.5 rounded-xl bg-pink-500/20 text-pink-400 border border-pink-500/30">
-                          <Instagram className="w-5 h-5" />
-                        </span>
-                        <div>
-                          <h3 className="text-sm font-semibold text-white">Instagram / Meta Graph API</h3>
-                          <p className="text-[11px] text-slate-400">Automated Comment-to-DM responder &amp; media engine</p>
-                        </div>
-                      </div>
-                      {renderStatusBadge(connectionsData.social_media.instagram.status, connectionsData.social_media.instagram.configured)}
-                    </div>
-
-                    <p className="text-xs text-slate-300 bg-white/5 p-3 rounded-xl border border-white/5">
-                      {connectionsData.social_media.instagram.instructions}
-                    </p>
-
-                    <div className="space-y-3">
-                      <div>
-                        <label className="block text-[11px] font-medium text-slate-400 mb-1">
-                          Instagram Professional Account ID
-                        </label>
-                        <input
-                          type="text"
-                          placeholder="e.g. 17841400000000000"
-                          value={formValues.INSTAGRAM_ACCOUNT_ID || ''}
-                          onChange={(e) => handleInputChange('INSTAGRAM_ACCOUNT_ID', e.target.value)}
-                          className="w-full px-3 py-2 rounded-xl text-xs bg-slate-900 border border-white/10 text-white focus:outline-none focus:border-pink-500"
-                        />
-                      </div>
-
-                      <div>
-                        <div className="flex items-center justify-between mb-1">
-                          <label className="text-[11px] font-medium text-slate-400">
-                            Meta User/Page Access Token
-                          </label>
-                          <button
-                            type="button"
-                            onClick={() => toggleShowSecret('instagram_token')}
-                            className="text-[10px] text-pink-400 hover:underline flex items-center gap-1"
-                          >
-                            {showSecret.instagram_token ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
-                            <span>{showSecret.instagram_token ? 'Hide' : 'Show'}</span>
-                          </button>
-                        </div>
-                        <input
-                          type={showSecret.instagram_token ? 'text' : 'password'}
-                          placeholder="EAA..."
-                          value={formValues.INSTAGRAM_ACCESS_TOKEN || ''}
-                          onChange={(e) => handleInputChange('INSTAGRAM_ACCESS_TOKEN', e.target.value)}
-                          className="w-full px-3 py-2 rounded-xl text-xs bg-slate-900 border border-white/10 text-white font-mono focus:outline-none focus:border-pink-500"
-                        />
-                      </div>
-
-                      <div className="grid grid-cols-2 gap-2">
-                        <div>
-                          <label className="block text-[10px] font-medium text-slate-400 mb-1">Callback URL</label>
-                          <input
-                            type="text"
-                            value={formValues.INSTAGRAM_CALLBACK_URL || '/api/webhooks/instagram'}
-                            onChange={(e) => handleInputChange('INSTAGRAM_CALLBACK_URL', e.target.value)}
-                            className="w-full px-2.5 py-1.5 rounded-lg text-[11px] bg-slate-900 border border-white/10 text-slate-300 font-mono"
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-[10px] font-medium text-slate-400 mb-1">Verify Token</label>
-                          <input
-                            type="text"
-                            value={formValues.INSTAGRAM_WEBHOOK_VERIFY_TOKEN || 'agentflow_v3_instagram_token'}
-                            onChange={(e) => handleInputChange('INSTAGRAM_WEBHOOK_VERIFY_TOKEN', e.target.value)}
-                            className="w-full px-2.5 py-1.5 rounded-lg text-[11px] bg-slate-900 border border-white/10 text-slate-300 font-mono"
-                          />
-                        </div>
-                      </div>
-
-                      {/* Test Result Message */}
-                      {testResults.instagram && (
-                        <div className={`p-2.5 rounded-xl text-[11px] font-medium border ${
-                          testResults.instagram.success 
-                            ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300' 
-                            : 'bg-rose-500/10 border-rose-500/30 text-rose-300'
-                        }`}>
-                          {testResults.instagram.message}
-                        </div>
-                      )}
-
-                      <div className="flex items-center justify-between pt-2">
-                        <button
-                          type="button"
-                          onClick={() => handleDisconnect('instagram')}
-                          className="text-[11px] text-slate-400 hover:text-rose-400 flex items-center gap-1 transition-colors"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                          <span>Clear</span>
-                        </button>
-
-                        <div className="flex items-center gap-2">
-                          <button
-                            type="button"
-                            onClick={() => handleTestConnection('instagram')}
-                            disabled={isTesting.instagram}
-                            className="px-3 py-1.5 rounded-xl text-xs font-medium bg-pink-500/15 hover:bg-pink-500/25 text-pink-300 border border-pink-500/30 transition-all flex items-center gap-1.5"
-                          >
-                            {isTesting.instagram && <RefreshCw className="w-3 h-3 animate-spin" />}
-                            <span>Test Connection</span>
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleSaveCredentials('instagram', ['INSTAGRAM_ACCOUNT_ID', 'INSTAGRAM_ACCESS_TOKEN', 'INSTAGRAM_CALLBACK_URL', 'INSTAGRAM_WEBHOOK_VERIFY_TOKEN'])}
-                            disabled={isSaving.instagram}
-                            className="px-3.5 py-1.5 rounded-xl text-xs font-semibold bg-pink-500 hover:bg-pink-400 text-slate-950 transition-all flex items-center gap-1.5"
-                          >
-                            <Save className="w-3.5 h-3.5" />
-                            <span>Save</span>
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                )}
-
               </div>
             </div>
           )}
@@ -641,130 +706,6 @@ export default function ConnectionsPage({ onNavigate = () => {} }) {
 
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 
-                {/* WhatsApp Card */}
-                {connectionsData.messaging.whatsapp && (
-                  <div className="glass-panel p-5 sm:p-6 rounded-2xl border border-white/10 space-y-4">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="flex items-center gap-3">
-                        <span className="p-2.5 rounded-xl bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
-                          <MessageCircle className="w-5 h-5" />
-                        </span>
-                        <div>
-                          <h3 className="text-sm font-semibold text-white">WhatsApp Business Cloud API</h3>
-                          <p className="text-[11px] text-slate-400">24/7 keyword auto-responder &amp; verified delivery</p>
-                        </div>
-                      </div>
-                      {renderStatusBadge(connectionsData.messaging.whatsapp.status, connectionsData.messaging.whatsapp.configured)}
-                    </div>
-
-                    <p className="text-xs text-slate-300 bg-white/5 p-3 rounded-xl border border-white/5">
-                      {connectionsData.messaging.whatsapp.instructions}
-                    </p>
-
-                    <div className="space-y-3">
-                      <div>
-                        <label className="block text-[11px] font-medium text-slate-400 mb-1">
-                          WhatsApp Phone Number ID
-                        </label>
-                        <input
-                          type="text"
-                          placeholder="e.g. 104592039485721"
-                          value={formValues.WHATSAPP_PHONE_NUMBER_ID || ''}
-                          onChange={(e) => handleInputChange('WHATSAPP_PHONE_NUMBER_ID', e.target.value)}
-                          className="w-full px-3 py-2 rounded-xl text-xs bg-slate-900 border border-white/10 text-white focus:outline-none focus:border-emerald-500"
-                        />
-                      </div>
-
-                      <div>
-                        <div className="flex items-center justify-between mb-1">
-                          <label className="text-[11px] font-medium text-slate-400">
-                            System Access Token
-                          </label>
-                          <button
-                            type="button"
-                            onClick={() => toggleShowSecret('whatsapp_token')}
-                            className="text-[10px] text-emerald-400 hover:underline flex items-center gap-1"
-                          >
-                            {showSecret.whatsapp_token ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
-                            <span>{showSecret.whatsapp_token ? 'Hide' : 'Show'}</span>
-                          </button>
-                        </div>
-                        <input
-                          type={showSecret.whatsapp_token ? 'text' : 'password'}
-                          placeholder="EAA..."
-                          value={formValues.WHATSAPP_ACCESS_TOKEN || ''}
-                          onChange={(e) => handleInputChange('WHATSAPP_ACCESS_TOKEN', e.target.value)}
-                          className="w-full px-3 py-2 rounded-xl text-xs bg-slate-900 border border-white/10 text-white font-mono focus:outline-none focus:border-emerald-500"
-                        />
-                      </div>
-
-                      <div className="grid grid-cols-2 gap-2">
-                        <div>
-                          <label className="block text-[10px] font-medium text-slate-400 mb-1">Callback URL</label>
-                          <input
-                            type="text"
-                            value={formValues.WHATSAPP_CALLBACK_URL || '/api/webhooks/whatsapp'}
-                            onChange={(e) => handleInputChange('WHATSAPP_CALLBACK_URL', e.target.value)}
-                            className="w-full px-2.5 py-1.5 rounded-lg text-[11px] bg-slate-900 border border-white/10 text-slate-300 font-mono"
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-[10px] font-medium text-slate-400 mb-1">Verify Token</label>
-                          <input
-                            type="text"
-                            value={formValues.WHATSAPP_VERIFY_TOKEN || 'agentflow_v3_whatsapp_token'}
-                            onChange={(e) => handleInputChange('WHATSAPP_VERIFY_TOKEN', e.target.value)}
-                            className="w-full px-2.5 py-1.5 rounded-lg text-[11px] bg-slate-900 border border-white/10 text-slate-300 font-mono"
-                          />
-                        </div>
-                      </div>
-
-                      {/* Test Result Message */}
-                      {testResults.whatsapp && (
-                        <div className={`p-2.5 rounded-xl text-[11px] font-medium border ${
-                          testResults.whatsapp.success 
-                            ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300' 
-                            : 'bg-rose-500/10 border-rose-500/30 text-rose-300'
-                        }`}>
-                          {testResults.whatsapp.message}
-                        </div>
-                      )}
-
-                      <div className="flex items-center justify-between pt-2">
-                        <button
-                          type="button"
-                          onClick={() => handleDisconnect('whatsapp')}
-                          className="text-[11px] text-slate-400 hover:text-rose-400 flex items-center gap-1 transition-colors"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                          <span>Clear</span>
-                        </button>
-
-                        <div className="flex items-center gap-2">
-                          <button
-                            type="button"
-                            onClick={() => handleTestConnection('whatsapp')}
-                            disabled={isTesting.whatsapp}
-                            className="px-3 py-1.5 rounded-xl text-xs font-medium bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30 transition-all flex items-center gap-1.5"
-                          >
-                            {isTesting.whatsapp && <RefreshCw className="w-3 h-3 animate-spin" />}
-                            <span>Test Connection</span>
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleSaveCredentials('whatsapp', ['WHATSAPP_PHONE_NUMBER_ID', 'WHATSAPP_ACCESS_TOKEN', 'WHATSAPP_CALLBACK_URL', 'WHATSAPP_VERIFY_TOKEN'])}
-                            disabled={isSaving.whatsapp}
-                            className="px-3.5 py-1.5 rounded-xl text-xs font-semibold bg-emerald-500 hover:bg-emerald-400 text-slate-950 transition-all flex items-center gap-1.5"
-                          >
-                            <Save className="w-3.5 h-3.5" />
-                            <span>Save</span>
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                )}
-
                 {/* Telegram Card */}
                 {connectionsData.messaging.telegram && (
                   <div className="glass-panel p-5 sm:p-6 rounded-2xl border border-white/10 space-y-4">
@@ -1033,7 +974,7 @@ export default function ConnectionsPage({ onNavigate = () => {} }) {
                           <PhoneCall className="w-5 h-5" />
                         </span>
                         <div>
-                          <h3 className="text-sm font-semibold text-white">AI Calling / Telephony (Twilio Incoming Voice)</h3>
+                          <h3 className="text-sm font-semibold text-white">AI Calling / Telephony (Exotel Incoming Voice)</h3>
                           <p className="text-[11px] text-slate-400">Autonomous incoming voice receptionist with speech recognition</p>
                         </div>
                       </div>
@@ -1045,52 +986,87 @@ export default function ConnectionsPage({ onNavigate = () => {} }) {
                     </p>
 
                     <div className="space-y-3">
-                      <div className="grid grid-cols-2 gap-2">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                         <div>
-                          <label className="block text-[11px] font-medium text-slate-400 mb-1">Twilio Phone Number</label>
+                          <label className="block text-[11px] font-medium text-slate-400 mb-1">Exotel Virtual Number (ExoPhone)</label>
                           <input
                             type="text"
-                            placeholder="+1234567890"
-                            value={formValues.TWILIO_PHONE_NUMBER || ''}
-                            onChange={(e) => handleInputChange('TWILIO_PHONE_NUMBER', e.target.value)}
-                            className="w-full px-3 py-2 rounded-xl text-xs bg-slate-900 border border-white/10 text-white focus:outline-none focus:border-amber-500"
+                            placeholder="09513886363 or +919513886363"
+                            value={formValues.EXOTEL_EXOPHONE || ''}
+                            onChange={(e) => handleInputChange('EXOTEL_EXOPHONE', e.target.value)}
+                            className="w-full px-3 py-2 rounded-xl text-xs bg-slate-900 border border-white/10 text-white focus:outline-none focus:border-amber-500 font-mono"
                           />
                         </div>
                         <div>
-                          <label className="block text-[11px] font-medium text-slate-400 mb-1">Twilio Account SID</label>
+                          <label className="block text-[11px] font-medium text-slate-400 mb-1">Exotel Account SID</label>
                           <input
                             type="text"
-                            placeholder="AC..."
-                            value={formValues.TWILIO_ACCOUNT_SID || ''}
-                            onChange={(e) => handleInputChange('TWILIO_ACCOUNT_SID', e.target.value)}
+                            placeholder="your_account_sid"
+                            value={formValues.EXOTEL_ACCOUNT_SID || ''}
+                            onChange={(e) => handleInputChange('EXOTEL_ACCOUNT_SID', e.target.value)}
+                            className="w-full px-3 py-2 rounded-xl text-xs bg-slate-900 border border-white/10 text-white font-mono focus:outline-none focus:border-amber-500"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        <div>
+                          <label className="block text-[11px] font-medium text-slate-400 mb-1">Exotel API Key</label>
+                          <input
+                            type="text"
+                            placeholder="Your Exotel API Key"
+                            value={formValues.EXOTEL_API_KEY || ''}
+                            onChange={(e) => handleInputChange('EXOTEL_API_KEY', e.target.value)}
+                            className="w-full px-3 py-2 rounded-xl text-xs bg-slate-900 border border-white/10 text-white font-mono focus:outline-none focus:border-amber-500"
+                          />
+                        </div>
+                        <div>
+                          <div className="flex items-center justify-between mb-1">
+                            <label className="text-[11px] font-medium text-slate-400">Exotel API Token</label>
+                            <button
+                              type="button"
+                              onClick={() => toggleShowSecret('exotel_token')}
+                              className="text-[10px] text-amber-400 hover:underline flex items-center gap-1"
+                            >
+                              {showSecret.exotel_token ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+                              <span>{showSecret.exotel_token ? 'Hide' : 'Show'}</span>
+                            </button>
+                          </div>
+                          <input
+                            type={showSecret.exotel_token ? 'text' : 'password'}
+                            placeholder="Your Exotel API Token"
+                            value={formValues.EXOTEL_API_TOKEN || ''}
+                            onChange={(e) => handleInputChange('EXOTEL_API_TOKEN', e.target.value)}
+                            className="w-full px-3 py-2 rounded-xl text-xs bg-slate-900 border border-white/10 text-white font-mono focus:outline-none focus:border-amber-500"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        <div>
+                          <label className="block text-[11px] font-medium text-slate-400 mb-1">Exotel Subdomain / Cluster</label>
+                          <input
+                            type="text"
+                            placeholder="api.exotel.com or api.in.exotel.com"
+                            value={formValues.EXOTEL_SUBDOMAIN || ''}
+                            onChange={(e) => handleInputChange('EXOTEL_SUBDOMAIN', e.target.value)}
+                            className="w-full px-3 py-2 rounded-xl text-xs bg-slate-900 border border-white/10 text-white font-mono focus:outline-none focus:border-amber-500"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[11px] font-medium text-slate-400 mb-1">Call Flow / App ID (Optional)</label>
+                          <input
+                            type="text"
+                            placeholder="Optional (e.g. 123456)"
+                            value={formValues.EXOTEL_APP_ID || ''}
+                            onChange={(e) => handleInputChange('EXOTEL_APP_ID', e.target.value)}
                             className="w-full px-3 py-2 rounded-xl text-xs bg-slate-900 border border-white/10 text-white font-mono focus:outline-none focus:border-amber-500"
                           />
                         </div>
                       </div>
 
                       <div>
-                        <div className="flex items-center justify-between mb-1">
-                          <label className="text-[11px] font-medium text-slate-400">Twilio Auth Token</label>
-                          <button
-                            type="button"
-                            onClick={() => toggleShowSecret('twilio_token')}
-                            className="text-[10px] text-amber-400 hover:underline flex items-center gap-1"
-                          >
-                            {showSecret.twilio_token ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
-                            <span>{showSecret.twilio_token ? 'Hide' : 'Show'}</span>
-                          </button>
-                        </div>
-                        <input
-                          type={showSecret.twilio_token ? 'text' : 'password'}
-                          placeholder="Your Twilio Auth Token"
-                          value={formValues.TWILIO_AUTH_TOKEN || ''}
-                          onChange={(e) => handleInputChange('TWILIO_AUTH_TOKEN', e.target.value)}
-                          className="w-full px-3 py-2 rounded-xl text-xs bg-slate-900 border border-white/10 text-white font-mono focus:outline-none focus:border-amber-500"
-                        />
-                      </div>
-
-                      <div>
-                        <label className="block text-[10px] font-medium text-slate-400 mb-1">Voice Greeting Message</label>
+                        <label className="block text-[10px] font-medium text-slate-400 mb-1">Default Spoken Greeting (Hinglish)</label>
                         <textarea
                           rows={2}
                           value={formValues.VOICE_GREETING_MESSAGE || ''}
@@ -1132,7 +1108,7 @@ export default function ConnectionsPage({ onNavigate = () => {} }) {
                           </button>
                           <button
                             type="button"
-                            onClick={() => handleSaveCredentials('calling', ['TWILIO_PHONE_NUMBER', 'TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN', 'VOICE_GREETING_MESSAGE'])}
+                            onClick={() => handleSaveCredentials('calling', ['EXOTEL_EXOPHONE', 'EXOTEL_ACCOUNT_SID', 'EXOTEL_API_KEY', 'EXOTEL_API_TOKEN', 'EXOTEL_SUBDOMAIN', 'EXOTEL_APP_ID', 'VOICE_GREETING_MESSAGE'])}
                             disabled={isSaving.calling}
                             className="px-3.5 py-1.5 rounded-xl text-xs font-semibold bg-amber-500 hover:bg-amber-400 text-slate-950 transition-all flex items-center gap-1.5"
                           >

@@ -8,7 +8,9 @@ import json
 import uuid
 import hmac
 import hashlib
+import asyncio
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional, List, Dict, Any, Tuple
 
 from fastapi import APIRouter, HTTPException, Query, UploadFile, File, Body, Request, Response
@@ -21,7 +23,8 @@ from backend.credentials import (
     set_credential,
     delete_credential,
     get_masked_credentials_summary,
-    test_service_connectivity
+    test_service_connectivity,
+    is_masked_secret
 )
 from backend.email_provider import (
     test_email_connection,
@@ -38,18 +41,9 @@ from backend.db import (
     update_social_post_schedule,
     claim_scheduled_social_post,
     delete_social_post,
-    save_instagram_rule,
-    list_instagram_rules,
-    get_instagram_rule_by_id,
-    delete_instagram_rule,
-    save_instagram_interaction,
-    list_instagram_interactions,
-    save_whatsapp_rule,
-    list_whatsapp_rules,
-    get_whatsapp_rule_by_id,
-    delete_whatsapp_rule,
-    save_whatsapp_message,
-    list_whatsapp_messages,
+    get_linkedin_preferences,
+    save_linkedin_preferences,
+    get_recent_linkedin_history,
     save_call_task,
     get_call_task_by_id,
     get_call_task_by_sid,
@@ -81,10 +75,8 @@ from backend.db import (
 )
 
 from backend.platform_engine import (
-    SocialMediaEngine,
     LinkedInAdapter,
-    InstagramAdapter,
-    WhatsAppAdapter,
+    LinkedInContentEngine,
     CallingAdapter,
     EmailAgentEngine,
     ResearchEngine,
@@ -92,10 +84,14 @@ from backend.platform_engine import (
     ImageGenerationEngine,
     calculate_schedule_times,
     compute_next_occurrence,
-    get_safe_timezone
+    get_safe_timezone,
+    PublishingJobTracker
 )
 from backend.voice_agent import (
+    validate_exotel_request,
+    parse_exotel_call_payload,
     validate_twilio_signature,
+    DEFAULT_VOICE_GREETING,
     generate_greeting_twiml,
     generate_turn_twiml,
     generate_farewell_twiml,
@@ -122,27 +118,8 @@ async def get_platform_dashboard():
 
 
 # =====================================================================
-# 2. Social Media Agent
+# 2. Social Posts & Visuals Pipeline (LinkedIn Support)
 # =====================================================================
-
-class SocialPostGenRequest(BaseModel):
-    topic: str
-    platform: str = "linkedin"
-    tone: str = "professional"
-    target_audience: str = "tech professionals"
-    include_hashtags: bool = True
-
-@platform_router.post("/social/generate")
-async def generate_social_post(req: SocialPostGenRequest):
-    """Generates social media content with hashtags and posting time recommendation."""
-    post_data = SocialMediaEngine.generate_post_content(
-        topic=req.topic,
-        platform=req.platform,
-        tone=req.tone,
-        target_audience=req.target_audience,
-        include_hashtags=req.include_hashtags
-    )
-    return {"status": "success", "draft": post_data, "post": post_data}
 
 @platform_router.get("/social/posts")
 async def get_social_posts(
@@ -301,6 +278,18 @@ async def approve_social_post_endpoint(post_id: str):
         is_due = True
 
     if is_due:
+        # Prevent concurrent / duplicate publishing
+        if post.get("status") == "publishing":
+            return {
+                "status": "in_progress",
+                "action": "already_publishing",
+                "message": "This post is currently being published to LinkedIn. Please wait.",
+                "post": post
+            }
+
+        # Atomically mark as publishing
+        await update_social_post_status(post_id=post_id, status="publishing")
+
         # Publish immediately
         content = post.get("content", "")
         if post.get("hashtags"):
@@ -310,9 +299,9 @@ async def approve_social_post_endpoint(post_id: str):
 
         plat = (post.get("platform") or "linkedin").lower().strip()
         if plat == "linkedin":
-            res = LinkedInAdapter.publish_ugc_post(content=content)
-        elif plat == "instagram":
-            res = InstagramAdapter.publish_media(caption=content, image_url=post.get("media_url"))
+            media_urls = post.get("media_urls") or []
+            media_url = media_urls[0] if media_urls else None
+            res = await asyncio.to_thread(LinkedInAdapter.publish_ugc_post, content=content, media_url=media_url)
         else:
             res = {"success": False, "status": "unsupported", "error": f"Direct publishing not supported for '{plat}'"}
 
@@ -394,10 +383,21 @@ async def change_social_post_status(post_id: str, payload: Dict[str, Any] = Body
 
 @platform_router.post("/social/posts/{post_id}/publish")
 async def publish_social_post_endpoint(post_id: str):
-    """Publishes a scheduled or approved post directly to LinkedIn or Instagram."""
+    """Publishes a scheduled or approved post directly to LinkedIn."""
     post = await get_social_post_by_id(post_id)
     if not post:
         raise HTTPException(status_code=404, detail="Social post not found")
+
+    # Prevent concurrent / duplicate publishing
+    if post.get("status") == "publishing":
+        return {
+            "status": "in_progress",
+            "message": "This post is currently being published to LinkedIn. Please wait.",
+            "post": post
+        }
+
+    # Atomically mark as publishing
+    await update_social_post_status(post_id=post_id, status="publishing")
 
     platform_name = (post.get("platform") or "linkedin").lower().strip()
     content = post.get("content", "")
@@ -408,12 +408,9 @@ async def publish_social_post_endpoint(post_id: str):
             content = f"{content}\n\n{ht_str}"
 
     if platform_name == "linkedin":
-        res = LinkedInAdapter.publish_ugc_post(content=content)
-    elif platform_name == "instagram":
-        res = InstagramAdapter.publish_media(
-            caption=content,
-            image_url=post.get("media_url")
-        )
+        media_urls = post.get("media_urls") or []
+        media_url = media_urls[0] if media_urls else None
+        res = await asyncio.to_thread(LinkedInAdapter.publish_ugc_post, content=content, media_url=media_url)
     else:
         res = {"success": False, "status": "unsupported", "error": f"Direct publishing not supported for '{platform_name}'"}
 
@@ -465,12 +462,126 @@ async def draft_linkedin_content(req: LinkedInDraftRequest):
 
 @platform_router.post("/linkedin/publish")
 async def publish_direct_linkedin(payload: Dict[str, Any] = Body(...)):
-    """Directly publishes provided text content to LinkedIn."""
+    """
+    Directly publishes provided text content to LinkedIn with optional single image attachment.
+    Supports dry_run/mock mode, records post in SQLite database, tracks progress via PublishingJobTracker,
+    and runs asynchronously without blocking the event loop.
+    """
     content = payload.get("content") or payload.get("caption", "")
     if not content.strip():
         raise HTTPException(status_code=400, detail="Content is required for publishing to LinkedIn")
-    res = LinkedInAdapter.publish_ugc_post(content=content)
+
+    media_url = payload.get("media_url") or payload.get("image_url")
+    dry_run = bool(payload.get("dry_run") or payload.get("mock"))
+
+    # Generate unique IDs for tracking
+    job_id = f"pub_job_{uuid.uuid4().hex[:10]}"
+    post_id = f"post_{uuid.uuid4().hex[:10]}"
+
+    # Initialize job in tracker
+    PublishingJobTracker.create_job(post_id=post_id, dry_run=dry_run, job_id=job_id)
+
+    # Save post record in database immediately as 'publishing'
+    try:
+        await save_social_post({
+            "id": post_id,
+            "platform": "linkedin",
+            "post_type": payload.get("post_type", "post"),
+            "content": content,
+            "caption": payload.get("caption", ""),
+            "hashtags": payload.get("hashtags", []),
+            "media_urls": [media_url] if media_url else [],
+            "status": "publishing"
+        })
+    except Exception as dberr:
+        print(f"[LinkedIn Publish] Warning: Could not pre-save post record: {dberr}")
+
+    # Dispatch via non-blocking thread execution
+    res = await asyncio.to_thread(
+        LinkedInAdapter.publish_ugc_post,
+        content=content,
+        media_url=media_url,
+        dry_run=dry_run,
+        job_id=job_id
+    )
+
+    # Update database record with final outcome
+    if res.get("success"):
+        try:
+            await update_social_post_status(
+                post_id=post_id,
+                status="published",
+                external_post_id=res.get("post_id", "")
+            )
+        except Exception:
+            pass
+    else:
+        try:
+            await update_social_post_status(
+                post_id=post_id,
+                status="failed",
+                error_message=res.get("error", "Direct publishing failed")
+            )
+        except Exception:
+            pass
+
+    res["post_db_id"] = post_id
+    res["job_id"] = job_id
     return res
+
+@platform_router.get("/linkedin/jobs/{job_id}")
+async def get_linkedin_job_status(job_id: str):
+    """Fetches real-time multi-stage status for an ongoing or completed publishing job."""
+    job = PublishingJobTracker.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Publishing job '{job_id}' not found")
+    return job
+
+@platform_router.post("/linkedin/detect-member")
+async def detect_linkedin_member(payload: Dict[str, Any] = Body(default={})):
+    """Automatically detects the authenticated LinkedIn member identifier using the active token."""
+    token = payload.get("token")
+    res = LinkedInAdapter.detect_authenticated_member(token=token)
+    return res
+
+@platform_router.post("/linkedin/validate-urn")
+async def validate_linkedin_urn(payload: Dict[str, Any] = Body(...)):
+    """Validates and canonicalizes a candidate LinkedIn Author URN or Member ID."""
+    author_urn = payload.get("author_urn", "")
+    is_valid, canonical_urn, err_msg = LinkedInAdapter.validate_author_urn(author_urn)
+    return {
+        "valid": is_valid,
+        "author_urn": canonical_urn,
+        "error": err_msg
+    }
+
+@platform_router.post("/linkedin/validate-author-urn")
+async def validate_linkedin_author_urn_endpoint(payload: Dict[str, Any] = Body(...)):
+    """Validates, decodes HTML, strips Markdown, and canonicalizes a LinkedIn Author URN."""
+    author_urn = payload.get("author_urn", "")
+    is_valid, canonical_urn, err_msg = LinkedInAdapter.validate_author_urn(author_urn)
+    return {
+        "valid": is_valid,
+        "author_urn": canonical_urn,
+        "cleaned_value": canonical_urn,
+        "error": err_msg
+    }
+
+@platform_router.post("/linkedin/set-author-urn")
+async def set_linkedin_author_urn(payload: Dict[str, Any] = Body(...)):
+    """Validates, cleans, and persists a LinkedIn Author URN."""
+    from backend.credentials import set_credential
+    author_urn = payload.get("author_urn", "")
+    is_valid, canonical_urn, err_msg = LinkedInAdapter.validate_author_urn(author_urn)
+    if not is_valid:
+        raise HTTPException(status_code=400, detail=err_msg)
+    set_credential("LINKEDIN_AUTHOR_URN", canonical_urn)
+    return {
+        "success": True,
+        "author_urn": canonical_urn,
+        "cleaned_value": canonical_urn,
+        "message": f"LinkedIn Author URN successfully updated to '{canonical_urn}'."
+    }
 
 @platform_router.post("/linkedin/reply")
 async def draft_linkedin_reply(payload: Dict[str, Any] = Body(...)):
@@ -480,219 +591,86 @@ async def draft_linkedin_reply(payload: Dict[str, Any] = Body(...)):
     return {"status": "success", "reply": reply}
 
 
-# =====================================================================
-# 4. Instagram Automation Agent & Comment-to-DM
-# =====================================================================
+# ---------------------------------------------------------------------
+# LinkedIn Content Direction, Deep Research & Quality Endpoints
+# ---------------------------------------------------------------------
 
-@platform_router.get("/instagram/status")
-async def get_instagram_status():
-    return InstagramAdapter.get_status()
+@platform_router.get("/linkedin/preferences")
+async def get_linkedin_preferences_endpoint():
+    """Retrieve user-defined LinkedIn content direction, preferences, and scheduler settings."""
+    prefs = await get_linkedin_preferences()
+    return {"status": "success", "preferences": prefs}
 
-@platform_router.get("/instagram/rules")
-async def get_instagram_rules():
-    rules = await list_instagram_rules()
-    return {"status": "success", "rules": rules}
 
-@platform_router.post("/instagram/rules")
-async def save_ig_rule(rule: Dict[str, Any] = Body(...)):
-    saved = await save_instagram_rule(rule)
-    return {"status": "success", "rule": saved}
+@platform_router.post("/linkedin/preferences")
+async def save_linkedin_preferences_endpoint(payload: Dict[str, Any] = Body(...)):
+    """Save user-defined LinkedIn content direction, preferences, and scheduler settings."""
+    updated = await save_linkedin_preferences(payload)
+    return {"status": "success", "preferences": updated, "message": "Content direction and preferences saved"}
 
-@platform_router.delete("/instagram/rules/{rule_id}")
-async def delete_ig_rule(rule_id: str):
-    await delete_instagram_rule(rule_id)
-    return {"status": "success", "deleted": True}
 
-@platform_router.get("/instagram/interactions")
-async def get_instagram_interactions(limit: int = 50):
-    logs = await list_instagram_interactions(limit=limit)
-    return {"status": "success", "interactions": logs}
+class ResearchAndGenerateRequest(BaseModel):
+    topic: Optional[str] = None
+    angle: Optional[str] = None
+    post_type: Optional[str] = None
+    generate_image: bool = True
+    auto_save_draft: bool = True
 
-@platform_router.post("/instagram/simulate-comment")
-async def simulate_instagram_comment(payload: Dict[str, Any] = Body(...)):
-    """Simulates an incoming Instagram comment to test the Comment-to-DM rule matching."""
-    comment_text = payload.get("comment_text", "GUIDE")
-    username = payload.get("username", "ai_builder_insha")
 
-    simulated_webhook_payload = {
-        "entry": [
-            {
-                "changes": [
-                    {
-                        "value": {
-                            "id": f"comm_{uuid.uuid4().hex[:8]}",
-                            "text": comment_text,
-                            "media": {"id": "media_test_reel_123"},
-                            "from": {"id": "user_456", "username": username}
-                        }
-                    }
-                ]
-            }
-        ]
-    }
-    interactions = await InstagramAdapter.process_comment_webhook(simulated_webhook_payload, is_simulation=True)
-    return {
-        "status": "success",
-        "matched": len(interactions) > 0,
-        "interactions": interactions
-    }
+@platform_router.post("/linkedin/research-and-generate")
+async def research_and_generate_endpoint(req: ResearchAndGenerateRequest):
+    """Deep multi-source research, anti-repetition synthesis, quality scoring, and image generation."""
+    result = await LinkedInContentEngine.research_and_generate_complete_post(
+        topic=req.topic,
+        angle=req.angle,
+        post_type=req.post_type,
+        generate_image=req.generate_image,
+        auto_save_draft=req.auto_save_draft
+    )
+    return {"status": "success", "result": result}
 
-def _enforce_meta_signature(request: Request, raw_body: bytes) -> None:
-    """
-    Validates Meta (Instagram / WhatsApp) webhook authenticity using HMAC-SHA256 signature.
-    In production (when META_APP_SECRET is set), strictly forbids requests without valid signature.
-    """
-    secret = get_credential("META_APP_SECRET")
-    if not secret:
-        # In development/demo when META_APP_SECRET is not configured, pass through
-        return
 
-    sig_header = request.headers.get("X-Hub-Signature-256") or request.headers.get("x-hub-signature-256")
-    if not sig_header:
-        raise HTTPException(status_code=403, detail="Missing X-Hub-Signature-256 header.")
+class QualityEvaluationRequest(BaseModel):
+    content: str
+    sources: Optional[List[Dict[str, Any]]] = None
+    topic: Optional[str] = ""
 
-    expected_prefix = "sha256="
-    if not sig_header.startswith(expected_prefix):
-        raise HTTPException(status_code=403, detail="Invalid X-Hub-Signature-256 header format.")
 
-    received_sig = sig_header[len(expected_prefix):].strip()
-    expected_sig = hmac.new(secret.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
+@platform_router.post("/linkedin/evaluate-quality")
+async def evaluate_quality_endpoint(req: QualityEvaluationRequest):
+    """Pre-publish quality verification scoring (0-100), hook check, substance, and suggestions."""
+    report = LinkedInContentEngine.evaluate_post_quality(
+        content=req.content,
+        sources=req.sources,
+        topic=req.topic
+    )
+    return {"status": "success", "quality_report": report}
 
-    if not hmac.compare_digest(received_sig, expected_sig):
-        raise HTTPException(status_code=403, detail="Invalid Meta webhook signature.")
 
-# Meta Instagram Webhook Endpoints
-@webhook_router.get("/instagram")
-async def verify_instagram_webhook(
-    hub_mode: Optional[str] = Query(None, alias="hub.mode"),
-    hub_verify_token: Optional[str] = Query(None, alias="hub.verify_token"),
-    hub_challenge: Optional[str] = Query(None, alias="hub.challenge")
-):
-    challenge = InstagramAdapter.verify_webhook(hub_mode or "", hub_verify_token or "", hub_challenge or "")
-    if challenge:
-        return PlainTextResponse(content=challenge)
-    raise HTTPException(status_code=403, detail="Verification token mismatch")
+@platform_router.get("/linkedin/history")
+async def get_linkedin_history_endpoint(limit: int = 30):
+    """Retrieve recent LinkedIn post history with research summaries, quality scores, and image metadata."""
+    history = await get_recent_linkedin_history(limit=limit)
+    return {"status": "success", "posts": history}
 
-@webhook_router.post("/instagram")
-async def handle_instagram_webhook(request: Request):
-    raw_body = await request.body()
-    _enforce_meta_signature(request, raw_body)
-    try:
-        payload = json.loads(raw_body.decode("utf-8")) if raw_body else {}
-    except Exception:
-        return {"status": "ignored"}
-    interactions = await InstagramAdapter.process_comment_webhook(payload, is_simulation=False)
-    return {"status": "processed", "interactions_count": len(interactions)}
+
+@platform_router.get("/linkedin/image-providers")
+async def get_image_providers_endpoint():
+    """Returns available AI image generation providers, active connection status, and free tier notes."""
+    status = ImageGenerationEngine.get_providers_status()
+    return {"status": "success", "providers": status}
+
+
+@platform_router.post("/linkedin/test-image-provider")
+async def test_image_provider_endpoint(payload: Dict[str, Any] = Body(...)):
+    """Tests connection to a specific image generation provider (cloudflare_ai, stability, ideogram, pollinations)."""
+    provider = payload.get("provider", "pollinations")
+    test_result = test_service_connectivity("image_gen", {"provider": provider, **payload})
+    return test_result
 
 
 # =====================================================================
-# 5. WhatsApp Automation Agent
-# =====================================================================
-
-@platform_router.get("/whatsapp/status")
-async def get_whatsapp_status():
-    return WhatsAppAdapter.get_status()
-
-@platform_router.get("/whatsapp/rules")
-async def get_whatsapp_rules():
-    rules = await list_whatsapp_rules()
-    return {"status": "success", "rules": rules}
-
-@platform_router.post("/whatsapp/rules")
-async def save_wa_rule(rule: Dict[str, Any] = Body(...)):
-    saved = await save_whatsapp_rule(rule)
-    return {"status": "success", "rule": saved}
-
-@platform_router.delete("/whatsapp/rules/{rule_id}")
-async def delete_wa_rule(rule_id: str):
-    await delete_whatsapp_rule(rule_id)
-    return {"status": "success", "deleted": True}
-
-@platform_router.get("/whatsapp/messages")
-async def get_whatsapp_messages(contact_phone: Optional[str] = None, limit: int = 50):
-    msgs = await list_whatsapp_messages(contact_phone=contact_phone, limit=limit)
-    return {"status": "success", "messages": msgs}
-
-@platform_router.post("/whatsapp/simulate-message")
-async def simulate_whatsapp_message(payload: Dict[str, Any] = Body(...)):
-    """Simulates an incoming WhatsApp message to test keyword auto-reply logic."""
-    from_num = payload.get("from_phone", "+919876543210")
-    contact_name = payload.get("contact_name", "Developer Friend")
-    text = payload.get("message_text", "PORTFOLIO")
-
-    simulated_payload = {
-        "entry": [
-            {
-                "changes": [
-                    {
-                        "value": {
-                            "contacts": [{"profile": {"name": contact_name}}],
-                            "messages": [
-                                {
-                                    "id": f"wamid_{uuid.uuid4().hex[:8]}",
-                                    "from": from_num,
-                                    "text": {"body": text}
-                                }
-                            ]
-                        }
-                    }
-                ]
-            }
-        ]
-    }
-    replies = await WhatsAppAdapter.process_message_webhook(simulated_payload, is_simulation=True)
-    return {
-        "status": "success",
-        "replies": replies
-    }
-
-@platform_router.post("/whatsapp/send")
-async def send_direct_whatsapp_message(payload: Dict[str, Any] = Body(...)):
-    """Dispatches an outbound WhatsApp message via the official WhatsApp Business Cloud API."""
-    phone = payload.get("recipient_phone") or payload.get("to_phone") or payload.get("phone", "")
-    body = payload.get("message_body") or payload.get("message") or payload.get("body", "")
-    template_name = payload.get("template_name")
-
-    if not phone or not body:
-        raise HTTPException(status_code=400, detail="Recipient phone number and message body are required.")
-
-    res = WhatsAppAdapter.send_cloud_message(to_phone=phone, body=body, template_name=template_name)
-    if res.get("success"):
-        await save_whatsapp_message({
-            "contact_phone": phone,
-            "direction": "outbound",
-            "message_body": body,
-            "message_id": res.get("message_id", ""),
-            "status": "sent"
-        })
-    return res
-
-# WhatsApp Business Webhook Endpoints
-@webhook_router.get("/whatsapp")
-async def verify_whatsapp_webhook(
-    hub_mode: Optional[str] = Query(None, alias="hub.mode"),
-    hub_verify_token: Optional[str] = Query(None, alias="hub.verify_token"),
-    hub_challenge: Optional[str] = Query(None, alias="hub.challenge")
-):
-    challenge = WhatsAppAdapter.verify_webhook(hub_mode or "", hub_verify_token or "", hub_challenge or "")
-    if challenge:
-        return PlainTextResponse(content=challenge)
-    raise HTTPException(status_code=403, detail="Verification token mismatch")
-
-@webhook_router.post("/whatsapp")
-async def handle_whatsapp_webhook(request: Request):
-    raw_body = await request.body()
-    _enforce_meta_signature(request, raw_body)
-    try:
-        payload = json.loads(raw_body.decode("utf-8")) if raw_body else {}
-    except Exception:
-        return {"status": "ignored"}
-    replies = await WhatsAppAdapter.process_message_webhook(payload, is_simulation=False)
-    return {"status": "processed", "replies_count": len(replies)}
-
-
-# =====================================================================
-# 6. AI Calling Agent
+# 4. AI Calling Agent
 # =====================================================================
 
 @platform_router.get("/calls/status")
@@ -844,42 +822,43 @@ def _get_public_webhook_url(request: Request) -> str:
     return url
 
 
-def _enforce_twilio_signature(request: Request, post_params: Dict[str, Any]) -> None:
+def _enforce_voice_security(request: Request, post_params: Dict[str, Any]) -> None:
     """
-    Validates Twilio webhook authenticity using HMAC-SHA1 signature.
-    In production (when TWILIO_AUTH_TOKEN is set), strictly forbids requests without valid signature.
+    Validates Exotel webhook requests and legacy signatures.
+    Ensures webhook requests are genuine without breaking trial testing.
     """
-    token = get_credential("TWILIO_AUTH_TOKEN")
-    if token:
-        sig = request.headers.get("X-Twilio-Signature")
-        if not sig:
-            raise HTTPException(status_code=403, detail="Missing X-Twilio-Signature header.")
+    sig = request.headers.get("X-Twilio-Signature")
+    if sig:
         full_url = _get_public_webhook_url(request)
-        if not validate_twilio_signature(full_url, post_params, sig, auth_token=token):
-            raise HTTPException(status_code=403, detail="Invalid Twilio signature.")
+        if not validate_twilio_signature(full_url, post_params, sig):
+            raise HTTPException(status_code=403, detail="Invalid webhook signature.")
+    else:
+        # Validate Exotel webhook payload / headers
+        if not validate_exotel_request(dict(request.headers), post_params):
+            raise HTTPException(status_code=403, detail="Invalid Exotel webhook request.")
 
 
 # =====================================================================
-# INCOMING AI VOICE CALL WEBHOOKS (TWILIO)
+# INCOMING AI VOICE CALL WEBHOOKS (EXOTEL & TELEPHONY)
 # =====================================================================
 
+@webhook_router.post("/voice/exotel/incoming")
+@webhook_router.get("/voice/exotel/incoming")
 @webhook_router.post("/voice/incoming")
 @webhook_router.get("/voice/incoming")
 async def handle_incoming_voice_call(request: Request):
     """
-    Dedicated Twilio Webhook for incoming voice calls.
-    Answers call, initializes call_tasks inbound record, and returns TwiML greeting with speech recognition.
+    Dedicated Exotel Webhook for incoming voice calls.
+    Handles Exotel Passthru requests when a call reaches the virtual number (ExoPhone).
+    Initializes inbound call task with Hindi/Hinglish greeting and sets up speech turn processing.
     """
     post_params, params = await _extract_voice_params(request)
-    _enforce_twilio_signature(request, post_params)
+    _enforce_voice_security(request, post_params)
 
-    caller_phone = params.get("From", "Unknown Caller").strip()
-    called_phone = params.get("To", "").strip()
-    call_sid = params.get("CallSid", f"inc_sid_{uuid.uuid4().hex[:12]}")
-    caller_city = params.get("FromCity", "")
-    caller_state = params.get("FromState", "")
-    caller_country = params.get("FromCountry", "")
-    caller_location = ", ".join(filter(bool, [caller_city, caller_state, caller_country]))
+    payload = parse_exotel_call_payload(params)
+    caller_phone = payload.get("caller_phone", "Unknown Caller").strip()
+    called_phone = payload.get("called_phone", "").strip()
+    call_sid = payload.get("call_sid") or f"exo_sid_{uuid.uuid4().hex[:12]}"
 
     # Check for existing record for this CallSid or create new
     existing = await get_call_task_by_sid(call_sid)
@@ -887,7 +866,7 @@ async def handle_incoming_voice_call(request: Request):
         call_id = existing["id"]
     else:
         call_id = f"call_inbound_{uuid.uuid4().hex[:8]}"
-        greeting_text = get_credential("VOICE_GREETING_MESSAGE", "Hello! Thank you for calling. I am your AgentFlow AI voice assistant. How may I assist you today?")
+        greeting_text = get_credential("VOICE_GREETING_MESSAGE", DEFAULT_VOICE_GREETING)
         initial_transcript = [
             {
                 "role": "assistant",
@@ -898,17 +877,19 @@ async def handle_incoming_voice_call(request: Request):
         await save_call_task({
             "id": call_id,
             "recipient_phone": caller_phone,
-            "recipient_name": caller_location or "Incoming Caller",
+            "recipient_name": "Incoming Caller",
             "direction": "inbound",
-            "purpose": "Inbound AI Voice Assistance",
-            "prompt_script": "Incoming AI Call - Active Voice Session",
+            "provider": "exotel",
+            "purpose": "Inbound AI Voice Receptionist",
+            "prompt_script": greeting_text,
             "scheduled_time": datetime.now().isoformat(),
             "status": "in_progress",
             "call_sid": call_sid,
             "duration_seconds": 0,
             "transcript": json.dumps(initial_transcript),
             "summary": "Inbound call in progress...",
-            "outcome": "in_progress"
+            "outcome": "in_progress",
+            "telegram_alert_sent": 0
         })
 
     turn_action_url = f"/api/webhooks/voice/process-turn?call_id={call_id}"
@@ -916,17 +897,35 @@ async def handle_incoming_voice_call(request: Request):
     return Response(content=twiml, media_type="application/xml")
 
 
+@webhook_router.post("/voice/exotel/passthru")
+@webhook_router.get("/voice/exotel/passthru")
+async def handle_exotel_passthru(request: Request):
+    """
+    Exotel Passthru Applet Callback.
+    Exotel invokes this URL during call flow execution to decide routing.
+    Returns HTTP 200 OK to continue call flow to greeting / voicemail recording.
+    """
+    _, params = await _extract_voice_params(request)
+    payload = parse_exotel_call_payload(params)
+    call_sid = payload.get("call_sid", "")
+    return Response(
+        content=json.dumps({"select": "1", "status": "connected", "call_sid": call_sid}),
+        media_type="application/json"
+    )
+
+
 @webhook_router.post("/voice/process-turn")
+@webhook_router.get("/voice/process-turn")
 async def handle_voice_process_turn(request: Request):
     """
     Multi-turn conversational voice turn handler.
-    Receives SpeechResult from Twilio <Gather>, queries LLM provider,
-    and returns next conversational turn with <Say> and <Gather>.
+    Receives caller speech input, queries AI engine with conversational Hindi/Hinglish prompt,
+    and returns next dialogue response.
     """
     post_params, params = await _extract_voice_params(request)
-    _enforce_twilio_signature(request, post_params)
+    _enforce_voice_security(request, post_params)
     call_id = request.query_params.get("call_id") or params.get("call_id")
-    call_sid = params.get("CallSid")
+    call_sid = params.get("CallSid") or params.get("call_sid")
 
     call_record = None
     if call_id:
@@ -934,8 +933,8 @@ async def handle_voice_process_turn(request: Request):
     if not call_record and call_sid:
         call_record = await get_call_task_by_sid(call_sid)
 
-    caller_phone = params.get("From", "")
-    speech_result = params.get("SpeechResult", "").strip()
+    caller_phone = params.get("CallFrom") or params.get("From") or (call_record.get("recipient_phone") if call_record else "")
+    speech_result = (params.get("SpeechResult") or params.get("speech_input") or "").strip()
 
     # Load existing transcript history
     transcript_turns = []
@@ -964,7 +963,7 @@ async def handle_voice_process_turn(request: Request):
 
     # Check for farewell
     if is_caller_farewell(speech_result):
-        farewell_reply = "Thank you for calling. I have logged your message and our team will follow up if needed. Have a wonderful day. Goodbye!"
+        farewell_reply = "Shukriya! Maine aapka message note kar liya hai. Insha aapse jald hi connect karengi. Have a great day! Alvida."
         transcript_turns.append({
             "role": "assistant",
             "text": farewell_reply,
@@ -981,10 +980,16 @@ async def handle_voice_process_turn(request: Request):
                 status="completed",
                 outcome=summary_data.get("intent", "completed"),
                 summary=summary_data.get("summary", ""),
+                caller_name=summary_data.get("caller_name", "Not provided"),
+                reason_for_calling=summary_data.get("reason_for_calling", "General Inquiry"),
+                full_message=summary_data.get("full_message", plain_transcript),
                 transcript=json.dumps(transcript_turns)
             )
-            # Dispatch Telegram Notification
-            send_voice_call_telegram_alert(updated or call_record)
+            # Dispatch Telegram Notification (duplicate-guarded)
+            if not call_record.get("telegram_alert_sent"):
+                tg_res = send_voice_call_telegram_alert(updated or call_record)
+                if tg_res.get("success"):
+                    await update_call_task_status(call_id=call_record["id"], telegram_alert_sent=1)
 
         twiml = generate_farewell_twiml(closing_text=farewell_reply)
         return Response(content=twiml, media_type="application/xml")
@@ -1014,58 +1019,79 @@ async def handle_voice_process_turn(request: Request):
     return Response(content=twiml, media_type="application/xml")
 
 
+@webhook_router.post("/voice/exotel/status")
+@webhook_router.get("/voice/exotel/status")
 @webhook_router.post("/voice/status")
+@webhook_router.get("/voice/status")
 async def handle_voice_call_status(request: Request):
     """
-    Twilio Call Status Callback webhook.
-    Updates call duration and final status, generates AI summary, and dispatches Telegram notification.
+    Exotel Call Status Callback webhook.
+    Fires at the end of every incoming call.
+    Updates call duration, status, recording URL, extracts AI summary, and dispatches rich Telegram alert.
     """
     post_params, params = await _extract_voice_params(request)
-    _enforce_twilio_signature(request, post_params)
-    call_sid = params.get("CallSid")
-    call_status = params.get("CallStatus", "completed").lower()
-    duration_sec = int(params.get("CallDuration") or 0)
+    _enforce_voice_security(request, post_params)
+
+    payload = parse_exotel_call_payload(params)
+    call_sid = payload.get("call_sid")
+    call_status = payload.get("status", "completed").lower()
+    duration_sec = payload.get("duration_seconds", 0)
+    recording_url = payload.get("recording_url", "")
+    caller_phone = payload.get("caller_phone", "")
 
     call_record = None
     if call_sid:
         call_record = await get_call_task_by_sid(call_sid)
 
     final_status = "completed"
-    if call_status in ("busy", "no-answer", "canceled"):
+    if call_status in ("busy", "no-answer", "canceled", "failed-busy"):
         final_status = "missed"
-    elif call_status == "failed":
+    elif call_status in ("failed", "error"):
         final_status = "failed"
-    elif call_status == "completed":
+    elif call_status in ("completed", "answered", "normal-clearing"):
         final_status = "completed"
 
     if call_record:
-        # Load transcript for summary if not already summarized
-        existing_summary = call_record.get("summary", "")
-        if not existing_summary or existing_summary == "Inbound call in progress...":
-            try:
-                turns = json.loads(call_record.get("transcript") or "[]")
-                plain_transcript = "\n".join([f"{t.get('role', 'speaker').capitalize()}: {t.get('text', '')}" for t in turns])
-            except Exception:
-                plain_transcript = call_record.get("transcript", "")
-            
-            summary_info = summarize_voice_call(plain_transcript, caller_phone=call_record.get("recipient_phone", ""))
-            updated = await update_call_task_status(
-                call_id=call_record["id"],
-                status=final_status,
-                outcome=summary_info.get("intent", final_status),
-                summary=summary_info.get("summary", ""),
-                duration_seconds=duration_sec
-            )
-            # Dispatch Telegram alert
-            send_voice_call_telegram_alert(updated or call_record)
-        else:
-            await update_call_task_status(
-                call_id=call_record["id"],
-                status=final_status,
-                duration_seconds=duration_sec
-            )
+        # Load transcript for summary
+        try:
+            turns = json.loads(call_record.get("transcript") or "[]")
+            plain_transcript = "\n".join([f"{t.get('role', 'speaker').capitalize()}: {t.get('text', '')}" for t in turns])
+        except Exception:
+            plain_transcript = call_record.get("transcript", "")
 
-    return {"status": "recorded", "call_sid": call_sid, "final_status": final_status}
+        summary_info = summarize_voice_call(plain_transcript, caller_phone=caller_phone or call_record.get("recipient_phone", ""))
+        
+        merged_rec = {
+            **call_record,
+            "status": final_status,
+            "duration_seconds": duration_sec,
+            "recording_url": recording_url or call_record.get("recording_url", ""),
+            "caller_name": summary_info.get("caller_name", "Not provided"),
+            "reason_for_calling": summary_info.get("reason_for_calling", "General Inquiry"),
+            "full_message": summary_info.get("full_message", plain_transcript),
+            "summary": summary_info.get("summary", ""),
+            "outcome": summary_info.get("intent", final_status)
+        }
+
+        updated = await update_call_task_status(
+            call_id=call_record["id"],
+            status=final_status,
+            outcome=summary_info.get("intent", final_status),
+            summary=summary_info.get("summary", ""),
+            duration_seconds=duration_sec,
+            recording_url=recording_url or call_record.get("recording_url", ""),
+            caller_name=summary_info.get("caller_name", "Not provided"),
+            reason_for_calling=summary_info.get("reason_for_calling", "General Inquiry"),
+            full_message=summary_info.get("full_message", plain_transcript)
+        )
+
+        # Dispatch Telegram alert (duplicate-guarded)
+        if not call_record.get("telegram_alert_sent"):
+            tg_res = send_voice_call_telegram_alert(merged_rec)
+            if tg_res.get("success"):
+                await update_call_task_status(call_id=call_record["id"], telegram_alert_sent=1)
+
+    return {"status": "recorded", "call_sid": call_sid, "final_status": final_status, "recording_url": recording_url}
 
 
 # =====================================================================
@@ -1081,41 +1107,70 @@ async def get_incoming_calls(status: Optional[str] = None, limit: int = 50):
 
 @platform_router.get("/calls/incoming-config")
 async def get_incoming_calls_config(request: Request):
-    """Returns webhook endpoints, environment configuration, and Twilio Console setup guide."""
+    """Returns webhook endpoints, Exotel configuration, Airtel forwarding codes, and trial notes."""
     base_url = str(request.base_url).rstrip("/")
-    tw_sid = bool(get_credential("TWILIO_ACCOUNT_SID"))
-    tw_token = bool(get_credential("TWILIO_AUTH_TOKEN"))
-    tw_phone = get_credential("TWILIO_PHONE_NUMBER") or ""
+    exo_key = bool(get_credential("EXOTEL_API_KEY"))
+    exo_token = bool(get_credential("EXOTEL_API_TOKEN"))
+    exo_sid = get_credential("EXOTEL_ACCOUNT_SID") or ""
+    exo_phone = get_credential("EXOTEL_EXOPHONE") or ""
+    exo_subdomain = get_credential("EXOTEL_SUBDOMAIN") or "api.exotel.com"
+    exo_app_id = get_credential("EXOTEL_APP_ID") or ""
     tg_token = bool(get_credential("TELEGRAM_BOT_TOKEN"))
     tg_chat = bool(get_credential("TELEGRAM_CHAT_ID"))
 
-    masked_phone = f"{tw_phone[:4]}***{tw_phone[-3:]}" if len(tw_phone) >= 7 else tw_phone
+    masked_phone = f"{exo_phone[:4]}***{exo_phone[-3:]}" if len(exo_phone) >= 7 else exo_phone
+    api_key_val = get_credential("EXOTEL_API_KEY") or ""
+    masked_key = f"{api_key_val[:4]}***{api_key_val[-3:]}" if len(api_key_val) >= 7 else (api_key_val if api_key_val else None)
+
+    is_configured = bool(exo_key and exo_token and exo_sid and exo_phone)
 
     return {
-        "status": "ready" if (tw_sid and tw_token and tw_phone) else "pending_credentials",
-        "phone_number": tw_phone,
-        "account_sid": get_credential("TWILIO_ACCOUNT_SID"),
-        "has_auth_token": tw_token,
-        "greeting_message": get_credential("VOICE_GREETING_MESSAGE", "Hello! Thank you for calling. I am your AgentFlow AI voice assistant. How may I assist you today?"),
+        "status": "ready" if is_configured else "pending_credentials",
+        "provider": "exotel",
+        "phone_number": exo_phone,
+        "masked_phone": masked_phone,
+        "account_sid": exo_sid,
+        "api_key": masked_key,
+        "has_api_token": exo_token,
+        "subdomain": exo_subdomain,
+        "app_id": exo_app_id,
+        "greeting_message": get_credential("VOICE_GREETING_MESSAGE", DEFAULT_VOICE_GREETING),
         "instructions": get_credential("VOICE_INSTRUCTIONS", ""),
-        "language": get_credential("VOICE_LANGUAGE", "en-IN"),
+        "language": get_credential("VOICE_LANGUAGE", "hi-IN"),
         "telegram_alerts": get_credential("VOICE_TELEGRAM_ALERTS", "true") == "true",
-        "webhook_url": f"{base_url}/api/webhooks/voice/incoming",
+        "webhook_url": f"{base_url}/api/webhooks/voice/exotel/incoming",
         "process_turn_url": f"{base_url}/api/webhooks/voice/process-turn",
-        "status_callback_url": f"{base_url}/api/webhooks/voice/status",
+        "status_callback_url": f"{base_url}/api/webhooks/voice/exotel/status",
+        "passthru_url": f"{base_url}/api/webhooks/voice/exotel/passthru",
+        "legacy_webhook_url": f"{base_url}/api/webhooks/voice/incoming",
         "credentials": {
-            "twilio_configured": bool(tw_sid and tw_token and tw_phone),
-            "twilio_phone_number": masked_phone if masked_phone else None,
+            "exotel_configured": is_configured,
+            "exotel_phone_number": masked_phone if masked_phone else None,
             "telegram_notifications_configured": bool(tg_token and tg_chat)
         },
-        "twilio_console_guide": [
-            "1. Log in to Twilio Console at console.twilio.com.",
-            "2. Navigate to Phone Numbers -> Manage -> Active numbers -> Click your Twilio phone number.",
-            "3. Scroll to 'Voice Configuration' section.",
-            "4. Under 'A CALL COMES IN', set: Webhook -> HTTP POST.",
-            f"5. Enter your URL: {base_url}/api/webhooks/voice/incoming",
-            f"6. Under 'STATUS CALLBACK URL', set: {base_url}/api/webhooks/voice/status (HTTP POST).",
-            "7. Click 'Save configuration' at the bottom of the page."
+        "exotel_flow_guide": [
+            "1. Log in to your Exotel Dashboard at https://my.exotel.com.",
+            "2. Navigate to App Bazaar -> Create Flow.",
+            "3. Add a Passthru Applet to receive inbound call notifications.",
+            f"4. Configure Passthru HTTP POST URL: {base_url}/api/webhooks/voice/exotel/incoming",
+            "5. Under Passthru Success branch, attach a Play / Record Applet to greet caller and capture message.",
+            f"6. In the Applet / Flow settings, set Status Callback URL: {base_url}/api/webhooks/voice/exotel/status",
+            "7. Save the Flow and assign your trial ExoPhone number to it under Phone Numbers -> Connect Flow."
+        ],
+        "airtel_forwarding_guide": [
+            "Airtel Call Forwarding Setup (Dial these USSD codes on your Airtel phone):",
+            f"• When Unanswered (25s): *61*{exo_phone or '<Your-ExoPhone>'}*11*25#",
+            f"• When Busy: *67*{exo_phone or '<Your-ExoPhone>'}#",
+            f"• When Unreachable / Switched Off: *62*{exo_phone or '<Your-ExoPhone>'}#",
+            f"• All Conditional Forwarding at Once: *004*{exo_phone or '<Your-ExoPhone>'}#",
+            "• Cancel All Forwarding Anytime: ##004#"
+        ],
+        "trial_limitations_guide": [
+            "Exotel Free Trial Specifics:",
+            "• Free trial provides a shared virtual number (ExoPhone) and account demo credits.",
+            "• Calls from your registered mobile number route directly to your flow without restrictions.",
+            "• Calls from unknown/unregistered numbers will hear Exotel ask for your 4-digit Account PIN before connecting.",
+            "• Account validity is 15 days from trial activation."
         ]
     }
 
@@ -1124,16 +1179,16 @@ async def get_incoming_calls_config(request: Request):
 async def simulate_incoming_call_turn(payload: Dict[str, Any] = Body(...)):
     """
     Simulates an incoming call turn-by-turn for testing without a real phone call.
-    Accepts speech_input, generates LLM reply, updates or creates mock transcript, and returns TwiML.
+    Accepts speech_input, generates LLM reply in Hindi/Hinglish, updates transcript, and returns summary.
     """
-    caller_phone = payload.get("caller_phone", "+15550001111")
-    speech_input = payload.get("speech_input", "Hello, I am calling about the AI Engineer opening.")
-    call_sid = payload.get("call_sid") or f"sim_call_{uuid.uuid4().hex[:10]}"
+    caller_phone = payload.get("caller_phone", "+919876543210")
+    speech_input = payload.get("speech_input", "Hello, main Insha se project ke baare mein baat karna chahta hoon.")
+    call_sid = payload.get("call_sid") or f"sim_exo_{uuid.uuid4().hex[:10]}"
     history = payload.get("history", [])
 
     is_farewell = is_caller_farewell(speech_input)
     if is_farewell:
-        ai_reply = "Thank you for calling. I have logged your message for our team. Have a wonderful day. Goodbye!"
+        ai_reply = "Shukriya! Maine aapka message note kar liya hai. Insha aapse jald hi connect karengi. Have a great day! Alvida."
         twiml = generate_farewell_twiml(ai_reply)
     else:
         ai_reply = process_caller_speech_turn(
@@ -1445,8 +1500,8 @@ async def get_connections_summary():
     """Returns safe, masked credentials and verified connection status across all 4 categories."""
     summary = get_masked_credentials_summary()
     category_meta = [
-        {"id": "social_media", "label": "Social Media", "desc": "LinkedIn, Instagram"},
-        {"id": "messaging", "label": "Messaging", "desc": "WhatsApp, Telegram"},
+        {"id": "social_media", "label": "Social Media", "desc": "LinkedIn"},
+        {"id": "messaging", "label": "Messaging", "desc": "Telegram"},
         {"id": "communication", "label": "Communication", "desc": "Email, AI Calling"},
         {"id": "ai_providers", "label": "AI Providers", "desc": "LLM, Image Engine"},
     ]
@@ -1468,11 +1523,23 @@ async def save_connection_credentials(request: Request, payload: Dict[str, Any] 
     """Saves credentials securely into SQLite user_settings and runtime os.environ."""
     _verify_local_admin(request)
     saved = []
+    cleaned_urn = None
     for k, v in payload.items():
-        if v is not None and not str(v).startswith("••••"):  # Ignore masked placeholders
-            set_credential(k, str(v).strip())
+        if v is not None and not is_masked_secret(v):  # Ignore masked placeholders
+            clean_v = str(v).strip()
+            if k == "LINKEDIN_AUTHOR_URN" and clean_v:
+                is_valid, canon_urn, urn_err = LinkedInAdapter.validate_author_urn(clean_v)
+                if not is_valid:
+                    raise HTTPException(status_code=400, detail=urn_err)
+                clean_v = canon_urn
+                cleaned_urn = canon_urn
+            set_credential(k, clean_v)
             saved.append(k)
-    return {"status": "success", "saved_keys": saved, "message": f"Successfully updated {len(saved)} credentials."}
+    resp = {"status": "success", "saved_keys": saved, "message": f"Successfully updated {len(saved)} credentials."}
+    if cleaned_urn:
+        resp["cleaned_author_urn"] = cleaned_urn
+        resp["author_urn"] = cleaned_urn
+    return resp
 
 
 @platform_router.post("/connections/test")
@@ -1490,11 +1557,9 @@ async def disconnect_connection_endpoint(request: Request, payload: Dict[str, An
     service_id = (payload.get("service_id") or "").lower().strip()
     keys_map = {
         "linkedin": ["LINKEDIN_CLIENT_ID", "LINKEDIN_CLIENT_SECRET", "LINKEDIN_ACCESS_TOKEN", "LINKEDIN_AUTHOR_URN"],
-        "instagram": ["META_APP_ID", "META_APP_SECRET", "INSTAGRAM_ACCOUNT_ID", "INSTAGRAM_ACCESS_TOKEN", "INSTAGRAM_WEBHOOK_VERIFY_TOKEN", "INSTAGRAM_CALLBACK_URL"],
-        "whatsapp": ["WHATSAPP_PHONE_NUMBER_ID", "WHATSAPP_WABA_ID", "WHATSAPP_ACCESS_TOKEN", "WHATSAPP_TOKEN", "WHATSAPP_VERIFY_TOKEN", "WHATSAPP_CALLBACK_URL"],
         "telegram": ["TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"],
         "email": ["EMAIL_USER", "EMAIL_PASS", "GMAIL_EMAIL", "GMAIL_APP_PASSWORD", "RESEND_API_KEY", "BREVO_API_KEY", "SMTP_HOST", "SMTP_PORT", "IMAP_HOST", "IMAP_PORT"],
-        "calling": ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_PHONE_NUMBER"],
+        "calling": ["EXOTEL_API_KEY", "EXOTEL_API_TOKEN", "EXOTEL_ACCOUNT_SID", "EXOTEL_EXOPHONE", "EXOTEL_SUBDOMAIN", "EXOTEL_APP_ID", "TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_PHONE_NUMBER"],
         "llm": ["GROQ_API_KEY", "GEMINI_API_KEY", "OPENAI_API_KEY"]
     }
     keys_to_delete = list(keys_map.get(service_id, []))
@@ -1505,29 +1570,94 @@ async def disconnect_connection_endpoint(request: Request, payload: Dict[str, An
     return {"status": "success", "disconnected": service_id, "deleted_keys": keys_to_delete}
 
 
+@platform_router.get("/integrations/catalog")
 @platform_router.get("/integrations")
 async def get_all_integrations():
-    """Backward compatibility alias for /api/platform/connections."""
-    summary = get_masked_credentials_summary()
-    flat_list = []
-    for cat_name, cat_items in summary.items():
-        for s_id, s_data in cat_items.items():
-            flat_list.append({
-                "id": s_id,
-                "name": s_data.get("name", s_id),
-                "category": s_data.get("category", cat_name),
-                "configured": s_data.get("configured", False),
-                "status": s_data.get("status", "not_connected"),
-                "instructions": s_data.get("instructions", "")
-            })
-    return {"status": "success", "integrations": flat_list}
+    """Returns the comprehensive 8-category integrations catalog with live statuses."""
+    from backend.credentials import get_all_integrations_catalog
+    catalog = get_all_integrations_catalog()
+    return {
+        "status": "success",
+        "summary": catalog["summary"],
+        "categories": catalog["categories"],
+        "integrations": catalog["all_integrations"]
+    }
+
+
+@platform_router.post("/integrations/save")
+async def save_integration_credentials(request: Request, payload: Dict[str, Any] = Body(...)):
+    """Saves credentials for a specific integration service into SQLite, cache, and .env."""
+    _verify_local_admin(request)
+    integration_id = payload.get("integration_id") or payload.get("service_id", "")
+    creds = payload.get("credentials") or {}
+    if not creds and "key" in payload and "value" in payload:
+        creds = {payload["key"]: payload["value"]}
+    elif not creds:
+        for k, v in payload.items():
+            if k not in ("integration_id", "service_id"):
+                creds[k] = v
+
+    saved = []
+    cleaned_urn = None
+    for k, v in creds.items():
+        if v is not None and str(v).strip():
+            clean_v = str(v).strip()
+            if is_masked_secret(clean_v):
+                continue
+            if k == "LINKEDIN_AUTHOR_URN" and clean_v:
+                is_valid, canon_urn, urn_err = LinkedInAdapter.validate_author_urn(clean_v)
+                if not is_valid:
+                    raise HTTPException(status_code=400, detail=urn_err)
+                clean_v = canon_urn
+                cleaned_urn = canon_urn
+            set_credential(k, clean_v)
+            saved.append(k)
+
+    resp = {
+        "status": "success",
+        "integration_id": integration_id,
+        "saved_keys": saved,
+        "message": f"Successfully configured {integration_id}."
+    }
+    if cleaned_urn:
+        resp["cleaned_author_urn"] = cleaned_urn
+        resp["author_urn"] = cleaned_urn
+    return resp
 
 
 @platform_router.post("/integrations/test")
 async def test_integration_connection_legacy(payload: Dict[str, Any] = Body(...)):
-    """Backward compatibility alias for testing."""
-    target = payload.get("integration_id") or payload.get("provider_id") or payload.get("service_id", "")
+    """Live validates credentials against the target service."""
+    target = payload.get("service_id") or payload.get("integration_id") or payload.get("provider_id", "")
     return test_service_connectivity(target, payload)
+
+
+@platform_router.post("/integrations/disconnect")
+async def disconnect_integration_endpoint(request: Request, payload: Dict[str, Any] = Body(...)):
+    """Disconnects and safely clears stored credentials for an integration."""
+    _verify_local_admin(request)
+    service_id = (payload.get("service_id") or payload.get("integration_id") or "").lower().strip()
+    keys_map = {
+        "linkedin": ["LINKEDIN_CLIENT_ID", "LINKEDIN_CLIENT_SECRET", "LINKEDIN_ACCESS_TOKEN", "LINKEDIN_AUTHOR_URN"],
+        "telegram": ["TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"],
+        "email": ["EMAIL_USER", "EMAIL_PASS", "GMAIL_EMAIL", "GMAIL_APP_PASSWORD", "RESEND_API_KEY", "BREVO_API_KEY", "SMTP_HOST", "SMTP_PORT", "IMAP_HOST", "IMAP_PORT"],
+        "email_smtp": ["EMAIL_USER", "EMAIL_PASS", "GMAIL_EMAIL", "GMAIL_APP_PASSWORD", "SMTP_HOST", "SMTP_PORT"],
+        "email_resend": ["RESEND_API_KEY"],
+        "email_brevo": ["BREVO_API_KEY"],
+        "calling": ["EXOTEL_API_KEY", "EXOTEL_API_TOKEN", "EXOTEL_ACCOUNT_SID", "EXOTEL_EXOPHONE", "EXOTEL_SUBDOMAIN", "EXOTEL_APP_ID", "TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_PHONE_NUMBER"],
+        "gemini": ["GEMINI_API_KEY"],
+        "groq": ["GROQ_API_KEY"],
+        "huggingface": ["HUGGINGFACE_API_KEY"],
+        "openai": ["OPENAI_API_KEY", "OPENAI_BASE_URL"],
+        "llm": ["GROQ_API_KEY", "GEMINI_API_KEY", "OPENAI_API_KEY"],
+        "webhooks": ["WEBHOOK_SECRET"]
+    }
+    keys_to_delete = list(keys_map.get(service_id, []))
+    if payload.get("keys"):
+        keys_to_delete.extend(payload["keys"])
+    for k in keys_to_delete:
+        delete_credential(k)
+    return {"status": "success", "disconnected": service_id, "deleted_keys": keys_to_delete, "message": f"Successfully disconnected {service_id}."}
 
 
 # =====================================================================
@@ -1551,6 +1681,9 @@ class SingleImageGenRequest(BaseModel):
     style: str = "Modern Tech"
     aspect_ratio: str = "1:1"
     visual_type: str = "showcase_visual"
+    goal: Optional[str] = "project_showcase"
+    provider: Optional[str] = None
+    auto_fallback: Optional[bool] = True
 
 
 @platform_router.post("/images/generate")
@@ -1562,12 +1695,25 @@ async def generate_single_image_endpoint(req: SingleImageGenRequest):
         prompt=req.prompt,
         style=req.style,
         aspect_ratio=req.aspect_ratio,
-        visual_type=req.visual_type
+        visual_type=req.visual_type,
+        goal=req.goal or "project_showcase",
+        provider=req.provider,
+        auto_fallback=True if req.auto_fallback is None else req.auto_fallback
     )
+    if res.get("success") is False:
+        return {
+            "status": "error",
+            "message": res.get("error", "AI image generation failed"),
+            "image": res,
+            "image_url": "",
+            "download_url": "",
+            "filename": ""
+        }
     return {
         "status": "success",
         "image": res,
         "image_url": res.get("image_url", ""),
+        "download_url": res.get("download_url", f"/api/platform/media/{res.get('filename')}/download"),
         "filename": res.get("filename", "")
     }
 
@@ -1592,7 +1738,12 @@ async def generate_carousel_endpoint(req: CarouselGenRequest):
         style=req.style,
         goal=req.goal
     )
-    return {"status": "success", "carousel": res, "slides": res.get("slides", [])}
+    return {
+        "status": "success",
+        "carousel": res,
+        "slides": res.get("slides", []),
+        "zip_download_url": res.get("zip_download_url", "")
+    }
 
 
 @platform_router.get("/media/{filename}")
@@ -1608,6 +1759,54 @@ async def serve_generated_media(filename: str):
     return FileResponse(str(file_path), media_type=media_type)
 
 
+@platform_router.get("/media/{filename}/download")
+async def download_generated_media(filename: str):
+    """Forces direct image download with Content-Disposition header."""
+    safe_name = os.path.basename(filename)
+    file_path = ImageGenerationEngine.WORKSPACE_MEDIA_DIR / safe_name
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Media file not found")
+    ext = Path(safe_name).suffix.lower() or ".png"
+    media_type = "image/jpeg" if ext in [".jpg", ".jpeg"] else "image/png"
+    download_filename = f"AgentFlow_LinkedIn_Visual{ext}"
+    return FileResponse(
+        str(file_path),
+        media_type=media_type,
+        filename=download_filename,
+        headers={"Content-Disposition": f'attachment; filename="{download_filename}"'}
+    )
+
+
+@platform_router.get("/media/carousel/zip")
+async def download_carousel_zip(filenames: str = Query(...)):
+    """Packages carousel slide images into a downloadable ZIP archive."""
+    import io
+    import zipfile
+    from fastapi.responses import Response
+
+    names = [os.path.basename(f.strip()) for f in filenames.split(",") if f.strip()]
+    if not names:
+        raise HTTPException(status_code=400, detail="No filenames provided")
+
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        for idx, fname in enumerate(names, start=1):
+            fpath = ImageGenerationEngine.WORKSPACE_MEDIA_DIR / fname
+            if fpath.exists():
+                ext = fpath.suffix.lower() or ".png"
+                arcname = f"Slide_{idx}{ext}"
+                zf.write(fpath, arcname=arcname)
+        manifest = f"AgentFlow LinkedIn Carousel\nTotal Slides: {len(names)}\nGenerated: {datetime.now().isoformat()}\n"
+        zf.writestr("carousel_info.txt", manifest)
+
+    zip_buffer.seek(0)
+    return Response(
+        content=zip_buffer.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": 'attachment; filename="AgentFlow_LinkedIn_Carousel.zip"'}
+    )
+
+
 
 # =====================================================================
 # 15. Incoming Telephony & Voice Assistant Settings API
@@ -1615,9 +1814,21 @@ async def serve_generated_media(filename: str):
 
 @platform_router.post("/calls/incoming-config")
 async def save_incoming_call_config(payload: Dict[str, Any] = Body(...)):
-    """Saves incoming call assistant settings."""
-    if "phone_number" in payload and payload["phone_number"]:
-        set_credential("TWILIO_PHONE_NUMBER", str(payload["phone_number"]).strip())
+    """Saves incoming call assistant settings and Exotel credentials."""
+    if "api_key" in payload and payload["api_key"]:
+        set_credential("EXOTEL_API_KEY", str(payload["api_key"]).strip())
+    if "api_token" in payload and payload["api_token"] and not str(payload["api_token"]).startswith("••••"):
+        set_credential("EXOTEL_API_TOKEN", str(payload["api_token"]).strip())
+    if "account_sid" in payload and payload["account_sid"]:
+        set_credential("EXOTEL_ACCOUNT_SID", str(payload["account_sid"]).strip())
+    if "exophone" in payload and payload["exophone"]:
+        set_credential("EXOTEL_EXOPHONE", str(payload["exophone"]).strip())
+    elif "phone_number" in payload and payload["phone_number"]:
+        set_credential("EXOTEL_EXOPHONE", str(payload["phone_number"]).strip())
+    if "subdomain" in payload and payload["subdomain"]:
+        set_credential("EXOTEL_SUBDOMAIN", str(payload["subdomain"]).strip())
+    if "app_id" in payload and payload["app_id"]:
+        set_credential("EXOTEL_APP_ID", str(payload["app_id"]).strip())
     if "greeting_message" in payload:
         set_credential("VOICE_GREETING_MESSAGE", str(payload["greeting_message"]).strip())
     if "instructions" in payload:
