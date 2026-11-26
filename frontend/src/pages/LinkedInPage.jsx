@@ -625,10 +625,124 @@ export default function LinkedInPage({ onNavigate = () => {} }) {
   };
 
   const [isPublishing, setIsPublishing] = useState(false);
+  const [publishJobId, setPublishJobId] = useState(null);
+  const [publishStatus, setPublishStatus] = useState('idle');
   const [publishStage, setPublishStage] = useState('');
   const [publishProgress, setPublishProgress] = useState(0);
+  const [publishMessage, setPublishMessage] = useState('');
   const [publishedPostData, setPublishedPostData] = useState(null);
   const [publishError, setPublishError] = useState(null);
+  const [publishUnknownWarning, setPublishUnknownWarning] = useState(null);
+
+  // Polling loop for active LinkedIn publishing job
+  const pollPublishingJob = async (jobId, attempts = 0) => {
+    if (!jobId) return;
+
+    if (attempts > 60) {
+      setIsPublishing(false);
+      setPublishStatus('unknown');
+      setPublishStage('Publication Status Unknown');
+      setPublishProgress(100);
+      setPublishUnknownWarning('Publication status unconfirmed after 90 seconds. The LinkedIn API is taking longer than expected. Please check your LinkedIn feed to verify if the post went live before retrying.');
+      localStorage.removeItem('agentflow_active_linkedin_job');
+      return;
+    }
+
+    try {
+      const res = await fetch(`/api/platform/linkedin/jobs/${jobId}`);
+      if (!res.ok) {
+        if (res.status === 404 && attempts < 3) {
+          setTimeout(() => pollPublishingJob(jobId, attempts + 1), 1500);
+          return;
+        }
+        throw new Error(`Job status returned HTTP ${res.status}`);
+      }
+
+      const data = await res.json();
+      const status = data.status || 'publishing';
+      const stage = data.stage || 'accepted';
+      const progress = typeof data.progress === 'number' ? data.progress : 50;
+      const msg = data.message || 'Processing...';
+
+      setPublishProgress(progress);
+      setPublishMessage(msg);
+      setPublishStage(stage);
+      setPublishStatus(status);
+
+      if (status === 'published' || stage === 'published_successfully') {
+        setIsPublishing(false);
+        setPublishProgress(100);
+        setPublishStage('Published Successfully');
+        setPublishMessage('Post published successfully to your LinkedIn profile!');
+        const resData = data.result || {};
+        const pId = data.external_post_id || resData.post_id || 'urn:li:ugcPost:live';
+        const pUrl = data.post_url || resData.post_url || (pId.startsWith('urn:li:') ? `https://www.linkedin.com/feed/update/${pId}` : 'https://www.linkedin.com/feed/');
+        setPublishedPostData({
+          post_id: pId,
+          post_url: pUrl,
+          published_at: data.published_at || new Date().toLocaleTimeString()
+        });
+        setStatusMessage({
+          type: 'success',
+          text: `Successfully published to LinkedIn! Post ID: ${pId}`
+        });
+        localStorage.removeItem('agentflow_active_linkedin_job');
+        fetchScheduledPosts();
+        fetchStatus();
+      } else if (status === 'unknown' || stage === 'publication_status_unknown') {
+        setIsPublishing(false);
+        setPublishProgress(100);
+        setPublishStage('Publication Status Unknown');
+        const unknownMsg = data.error || data.message || 'Publication status unknown: Request timed out while awaiting LinkedIn confirmation. Please check your LinkedIn feed to verify whether the post went live before attempting to publish again.';
+        setPublishUnknownWarning(unknownMsg);
+        setStatusMessage({ type: 'warning', text: unknownMsg });
+        localStorage.removeItem('agentflow_active_linkedin_job');
+        fetchScheduledPosts();
+      } else if (status === 'failed' || stage === 'publishing_failed') {
+        setIsPublishing(false);
+        setPublishProgress(100);
+        setPublishStage('Publishing Failed');
+        const errMsg = data.error || data.message || 'LinkedIn publishing failed. Ensure credentials and Author URN are valid in Connections.';
+        setPublishError(errMsg);
+        setStatusMessage({ type: 'error', text: errMsg });
+        localStorage.removeItem('agentflow_active_linkedin_job');
+      } else {
+        // Job still processing: poll again in 1.5s
+        setTimeout(() => pollPublishingJob(jobId, attempts + 1), 1500);
+      }
+    } catch (err) {
+      console.warn('[LinkedIn Poll] Transient poll notice:', err);
+      setTimeout(() => pollPublishingJob(jobId, attempts + 1), 2000);
+    }
+  };
+
+  // Recover active job on page refresh or mount
+  useEffect(() => {
+    const savedJobId = localStorage.getItem('agentflow_active_linkedin_job');
+    if (savedJobId) {
+      setPublishJobId(savedJobId);
+      setIsPublishing(true);
+      setPublishStage('Publishing to LinkedIn');
+      setPublishMessage('Resuming active publishing job tracking...');
+      pollPublishingJob(savedJobId, 0);
+    } else {
+      fetch('/api/platform/linkedin/active-job')
+        .then(r => r.ok ? r.json() : {})
+        .then(data => {
+          if (data && data.has_active_job && data.job) {
+            const activeJob = data.job;
+            setPublishJobId(activeJob.job_id);
+            setIsPublishing(true);
+            setPublishStage(activeJob.stage || 'accepted');
+            setPublishProgress(activeJob.progress || 15);
+            setPublishMessage(activeJob.message || 'Publishing in progress...');
+            localStorage.setItem('agentflow_active_linkedin_job', activeJob.job_id);
+            pollPublishingJob(activeJob.job_id, 0);
+          }
+        })
+        .catch(() => {});
+    }
+  }, []);
 
   const handlePublishDirect = async () => {
     if (!draftResult) {
@@ -641,88 +755,53 @@ export default function LinkedInPage({ onNavigate = () => {} }) {
 
     setIsPublishing(true);
     setPublishError(null);
+    setPublishUnknownWarning(null);
     setPublishedPostData(null);
-    setPublishProgress(15);
-    setPublishStage('Validating content & LinkedIn Author URN...');
+    setPublishStatus('accepted');
+    setPublishProgress(10);
+    setPublishStage('Publishing Request Accepted');
+    setPublishMessage('Submitting publishing job to AgentFlow backend...');
     setStatusMessage(null);
 
-    // Dynamic stage updates while backend executes
-    const stageTimer1 = setTimeout(() => {
-      setPublishProgress(35);
-      setPublishStage('Verifying active LinkedIn OAuth 2.0 token...');
-    }, 1200);
-
-    const stageTimer2 = setTimeout(() => {
-      setPublishProgress(attachedMediaUrl ? 60 : 75);
-      setPublishStage(attachedMediaUrl ? 'Uploading attached media asset to LinkedIn S3...' : 'Dispatching UGC Post request to LinkedIn API...');
-    }, 2800);
-
-    const stageTimer3 = setTimeout(() => {
-      setPublishProgress(90);
-      setPublishStage('Confirming post publication with LinkedIn API...');
-    }, 4500);
-
-    // 25-second AbortController timeout to prevent hanging forever
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 25000);
+    const idempotencyKey = `pub_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
     try {
       const fullText = `${draftResult.headline ? `${draftResult.headline}\n\n` : ''}${draftResult.content}\n\n${(draftResult.hashtags || []).join(' ')}`;
       const res = await fetch('/api/platform/linkedin/publish', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        signal: controller.signal,
         body: JSON.stringify({ 
           content: fullText,
           media_url: attachedMediaUrl,
-          post_type: postType || 'post'
+          post_type: postType || 'post',
+          idempotency_key: idempotencyKey
         })
       });
-      clearTimeout(timeoutId);
-      clearTimeout(stageTimer1);
-      clearTimeout(stageTimer2);
-      clearTimeout(stageTimer3);
 
       const data = await res.json().catch(() => ({}));
-      if (res.ok && data.success) {
-        setPublishProgress(100);
-        setPublishStage('Confirmed! Post is published to LinkedIn feed.');
-        setPublishedPostData({
-          post_id: data.post_id || 'urn:li:ugcPost:live',
-          post_url: data.post_url || (data.post_id ? `https://www.linkedin.com/feed/update/${data.post_id}` : 'https://www.linkedin.com/feed/'),
-          published_at: new Date().toLocaleTimeString()
-        });
-        setStatusMessage({
-          type: 'success',
-          text: `Successfully published to LinkedIn! Post ID: ${data.post_id || 'UGC Post created'}`
-        });
-        fetchScheduledPosts();
-        fetchStatus();
+      if (res.ok && data.job_id) {
+        const jobId = data.job_id;
+        setPublishJobId(jobId);
+        localStorage.setItem('agentflow_active_linkedin_job', jobId);
+        setPublishProgress(data.progress || 15);
+        setPublishStage(data.stage === 'already_running' ? 'Publishing to LinkedIn' : 'Publishing Request Accepted');
+        setPublishMessage(data.message || 'Publishing request accepted. Processing in background...');
+
+        // Start live polling of backend job status
+        pollPublishingJob(jobId, 0);
       } else {
-        setPublishProgress(0);
-        const errMsg = data.error || data.detail || `LinkedIn publish failed (HTTP ${res.status}). Ensure LINKEDIN_ACCESS_TOKEN and LINKEDIN_AUTHOR_URN are configured in Integrations Hub.`;
+        setIsPublishing(false);
+        const errMsg = data.error || data.detail || `Publishing request failed (HTTP ${res.status}). Ensure credentials and Author URN are valid.`;
         setPublishError(errMsg);
-        setPublishStage('Publishing failed');
-        setStatusMessage({
-          type: 'error',
-          text: errMsg
-        });
+        setPublishStage('Publishing Failed');
+        setStatusMessage({ type: 'error', text: errMsg });
       }
     } catch (e) {
-      clearTimeout(timeoutId);
-      clearTimeout(stageTimer1);
-      clearTimeout(stageTimer2);
-      clearTimeout(stageTimer3);
-      setPublishProgress(0);
-      const isTimeout = e.name === 'AbortError';
-      const errMsg = isTimeout 
-        ? 'Publishing request timed out after 25s. The backend may still be processing or LinkedIn API responded slowly.'
-        : `Direct publishing failed: ${e.message || 'Cannot reach backend server.'}`;
-      setPublishError(errMsg);
-      setPublishStage('Publishing failed');
-      setStatusMessage({ type: 'error', text: errMsg });
-    } finally {
       setIsPublishing(false);
+      const errMsg = `Cannot reach AgentFlow backend: ${e.message || 'Network error'}`;
+      setPublishError(errMsg);
+      setPublishStage('Publishing Failed');
+      setStatusMessage({ type: 'error', text: errMsg });
     }
   };
 
@@ -1877,25 +1956,29 @@ export default function LinkedInPage({ onNavigate = () => {} }) {
 
               {draftResult && (
                 <div className="pt-4 border-t border-white/10 space-y-3">
-                  {/* Real-time Publishing Progress Stepper */}
+                  {/* Real-time Publishing Progress Stepper (Driven by actual backend job polling) */}
                   {isPublishing && (
                     <div className="p-4 rounded-xl bg-blue-500/10 border border-blue-500/30 space-y-2.5 animate-pulse">
                       <div className="flex items-center justify-between text-xs">
                         <span className="flex items-center gap-2 text-blue-300 font-semibold">
                           <RefreshCw className="w-4 h-4 animate-spin text-blue-400" />
-                          <span>Publishing to LinkedIn...</span>
+                          <span>{publishStage || 'Publishing to LinkedIn...'}</span>
                         </span>
                         <span className="font-mono text-blue-300 font-bold">{publishProgress}%</span>
                       </div>
                       <div className="w-full bg-slate-800/80 rounded-full h-2 overflow-hidden border border-blue-500/20">
                         <div 
-                          className="bg-gradient-to-r from-blue-500 to-cyan-400 h-2 rounded-full transition-all duration-500" 
-                          style={{ width: `${publishProgress}%` }}
+                          className="bg-gradient-to-r from-blue-500 to-cyan-400 h-2 rounded-full transition-all duration-300" 
+                          style={{ width: `${Math.max(publishProgress, 10)}%` }}
                         />
                       </div>
                       <div className="text-[11px] text-slate-300 flex items-center justify-between">
-                        <span>{publishStage}</span>
-                        <span className="text-slate-400 text-[10px]">Max timeout: 25s</span>
+                        <span className="truncate pr-2">{publishMessage || 'Processing publishing job asynchronously...'}</span>
+                        {publishJobId && (
+                          <span className="text-[10px] text-blue-400 font-mono flex-shrink-0 bg-blue-500/10 px-1.5 py-0.5 rounded border border-blue-500/20">
+                            {publishJobId}
+                          </span>
+                        )}
                       </div>
                     </div>
                   )}
@@ -1906,7 +1989,7 @@ export default function LinkedInPage({ onNavigate = () => {} }) {
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-2 text-emerald-400 font-semibold text-xs">
                           <CheckCircle2 className="w-4 h-4" />
-                          <span>Post Successfully Published to LinkedIn!</span>
+                          <span>Published Successfully</span>
                         </div>
                         <span className="text-[10px] text-slate-400">{publishedPostData.published_at}</span>
                       </div>
@@ -1936,12 +2019,56 @@ export default function LinkedInPage({ onNavigate = () => {} }) {
                     </div>
                   )}
 
-                  {/* Publishing Error Card with Direct Retry */}
+                  {/* Publication Status Unknown Card (Timeout After Dispatch - Prevents Duplicate Posting) */}
+                  {publishUnknownWarning && !isPublishing && (
+                    <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/30 space-y-2.5">
+                      <div className="flex items-center gap-2 text-amber-400 font-semibold text-xs">
+                        <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                        <span>Publication Status Unknown</span>
+                      </div>
+                      <p className="text-[11px] text-slate-300 leading-relaxed">
+                        {publishUnknownWarning}
+                      </p>
+                      <div className="text-[10px] text-amber-300/80 bg-amber-500/5 p-2 rounded-lg border border-amber-500/10">
+                        To prevent duplicate posts, do not retry until you have checked your LinkedIn profile to confirm whether the post went live.
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2 pt-1">
+                        <a
+                          href="https://www.linkedin.com/feed/"
+                          target="_blank"
+                          rel="noreferrer"
+                          className="py-1.5 px-3 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-[11px] font-semibold flex items-center gap-1.5 transition-all shadow-sm"
+                        >
+                          <ExternalLink className="w-3.5 h-3.5" />
+                          <span>Check LinkedIn Feed</span>
+                        </a>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setPublishUnknownWarning(null);
+                            handlePublishDirect();
+                          }}
+                          className="py-1.5 px-3 rounded-lg bg-white/10 hover:bg-white/15 text-white text-[11px] font-medium transition-all"
+                        >
+                          I Verified (Not Live), Retry Publish
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setPublishUnknownWarning(null)}
+                          className="py-1.5 px-3 rounded-lg bg-white/5 hover:bg-white/10 text-slate-300 text-[11px] font-medium transition-all"
+                        >
+                          Dismiss
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Publishing Failed Card with Direct Retry */}
                   {publishError && !isPublishing && (
                     <div className="p-4 rounded-xl bg-red-500/10 border border-red-500/30 space-y-2">
                       <div className="flex items-center gap-2 text-red-400 font-semibold text-xs">
                         <AlertCircle className="w-4 h-4 flex-shrink-0" />
-                        <span>Publishing Unsuccessful</span>
+                        <span>Publishing Failed</span>
                       </div>
                       <p className="text-[11px] text-slate-300 leading-relaxed">{publishError}</p>
                       <div className="flex items-center gap-2 pt-1">
