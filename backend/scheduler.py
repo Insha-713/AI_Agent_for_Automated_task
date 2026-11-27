@@ -386,7 +386,32 @@ async def add_scheduled_task(
     minute: int = 0,
     day_of_week: str = "mon"
 ) -> Dict[str, Any]:
-    """Adds a recurring task to APScheduler and persists it in SQLite."""
+    """Adds a recurring task to APScheduler and persists it in SQLite with duplicate prevention."""
+    # Deduplication check: If an identical active or paused schedule exists, update it instead of creating a duplicate job
+    clean_prompt = prompt.strip().lower()
+    clean_name = name.strip().lower()
+    saved_schedules = await list_schedules_from_db()
+    for existing in saved_schedules:
+        existing_prompt = (existing.get("prompt") or "").strip().lower()
+        existing_name = (existing.get("name") or "").strip().lower()
+        if (existing_prompt == clean_prompt or existing_name == clean_name) and existing.get("status") in ("active", "paused"):
+            existing_id = existing["id"]
+            await edit_scheduled_task(
+                schedule_id=existing_id,
+                name=name,
+                prompt=prompt,
+                frequency=frequency,
+                timezone_str=timezone_str,
+                cron_expression=cron_expression,
+                hour=hour,
+                minute=minute,
+                day_of_week=day_of_week
+            )
+            print(f"[Scheduler] Notice: Duplicate schedule detected for '{name}'. Updated existing schedule ({existing_id}) instead of creating duplicate job.")
+            updated_record = await get_schedule_from_db(existing_id)
+            if updated_record:
+                return updated_record
+
     schedule_id = str(uuid.uuid4())
     trigger = _create_trigger(
         frequency=frequency,
@@ -522,9 +547,18 @@ async def start_scheduler():
         print("[Scheduler] APScheduler started.")
 
     saved_schedules = await list_schedules_from_db()
+    seen_identifiers = set()
     for s in saved_schedules:
         if s.get("status") == "active":
             sid = s["id"]
+            norm_prompt = (s.get("prompt") or "").strip().lower()
+            norm_name = (s.get("name") or "").strip().lower()
+            ident = norm_prompt or norm_name
+            if ident in seen_identifiers:
+                print(f"[Scheduler] Notice: Skipping duplicate active schedule '{s['name']}' ({sid}) on startup.")
+                continue
+            seen_identifiers.add(ident)
+
             if not scheduler.get_job(sid):
                 time_params = parse_schedule_time_params(
                     cron_or_interval=s.get("cron_or_interval", ""),

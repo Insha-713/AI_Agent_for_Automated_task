@@ -200,7 +200,8 @@ app.add_middleware(
     allow_origin_regex=r"https?://.*",
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"],
+    allow_headers=["*", "X-AgentFlow-Admin-Key", "Content-Type", "Authorization"],
+    expose_headers=["X-AgentFlow-Admin-Key"],
 )
 
 # Register Career Agent Router (AgentFlow v3.0)

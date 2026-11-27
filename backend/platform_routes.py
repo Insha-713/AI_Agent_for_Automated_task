@@ -1627,15 +1627,20 @@ async def manual_trigger_rule(rule_id: str):
 def _verify_local_admin(request: Request) -> None:
     """
     Restricts administrative mutations (credentials, data purge) to localhost clients
-    or requests bearing a valid X-AgentFlow-Admin-Key.
+    or requests bearing a valid X-AgentFlow-Admin-Key using constant-time comparison.
     """
     client_host = request.client.host if request.client else "unknown"
     is_local = client_host in ("127.0.0.1", "::1", "localhost", "testclient")
     
     admin_key = get_credential("AGENTFLOW_ADMIN_KEY")
-    req_key = request.headers.get("X-AgentFlow-Admin-Key")
+    req_key = (
+        request.headers.get("X-AgentFlow-Admin-Key")
+        or request.headers.get("x-agentflow-admin-key")
+        or ""
+    ).strip()
     
-    if admin_key and req_key == admin_key:
+    # Constant-time comparison to prevent timing side-channel attacks
+    if admin_key and req_key and hmac.compare_digest(req_key, admin_key.strip()):
         return
         
     if is_local:
@@ -1645,6 +1650,20 @@ def _verify_local_admin(request: Request) -> None:
         status_code=403,
         detail="Administrative operation prohibited from non-local client without valid X-AgentFlow-Admin-Key."
     )
+
+
+@platform_router.post("/admin/verify")
+async def verify_admin_key_endpoint(request: Request):
+    """
+    Validates whether the provided X-AgentFlow-Admin-Key header or local client is authorized.
+    Returns HTTP 200 on success or HTTP 403 if unauthorized.
+    """
+    _verify_local_admin(request)
+    return {
+        "status": "success",
+        "authorized": True,
+        "message": "Administrative access verified."
+    }
 
 @platform_router.get("/connections")
 async def get_connections_summary():

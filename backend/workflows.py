@@ -1721,7 +1721,15 @@ class WorkflowExecutionEngine:
                     }
 
                 # Check for explicit Error indicators
-                if res_str.startswith("Error:") or res_str.startswith("Failed to ") or "Unresolved workflow template placeholder(s)" in res_str:
+                res_lower = res_str.lower()
+                is_explicit_error = (
+                    res_str.startswith("Error:") or
+                    res_lower.startswith("error") or
+                    res_str.startswith("Failed to ") or
+                    "weather data currently unavailable" in res_lower or
+                    "unresolved workflow template placeholder(s)" in res_str
+                )
+                if is_explicit_error:
                     return {
                         "status": "failed",
                         "error_type": "error",
@@ -2276,6 +2284,33 @@ class WorkflowExecutionEngine:
                     "error": err_msg
                 }
 
+                # Requirement 6 & 7: If a weather retrieval step fails in a workflow configured to email the weather,
+                # send a clearly labelled failure notification email instead of leaving the user in the dark
+                # or sending a misleading report.
+                if tool_name == "get_weather" and not self.dry_run:
+                    all_steps = self.plan.get("steps", [])
+                    email_step = next((s for s in all_steps[idx + 1:] if s.get("tool") == "send_email"), None)
+                    if email_step:
+                        sub_email_params = self.substitute_params(email_step.get("params", {}))
+                        to_email = sub_email_params.get("to_email", "").strip()
+                        city_param = resolved_params.get("city", "the requested location")
+                        if to_email and "@" in to_email and "{{" not in to_email:
+                            fail_subject = f"[Weather Report Failed] Unable to Retrieve Forecast for {city_param}"
+                            fail_body = (
+                                f"Hello,\n\n"
+                                f"AgentFlow automated weather dispatch was unable to retrieve live weather data for '{city_param}' at this scheduled run.\n\n"
+                                f"Status: The meteorological service is temporarily unreachable or returned invalid data.\n\n"
+                                f"Our system has logged this technical failure and will attempt to retrieve the forecast on the next scheduled run. No action is required.\n\n"
+                                f"— Automated AgentFlow Dispatch"
+                            )
+                            try:
+                                from backend.email_provider import send_email_via_provider, is_email_configured
+                                if is_email_configured():
+                                    send_res = send_email_via_provider(to_email, fail_subject, fail_body)
+                                    print(f"[Workflows] Dispatched weather failure notification to {to_email}: {send_res}")
+                            except Exception as notify_err:
+                                print(f"[Workflows] Notice: Failed to dispatch weather failure notification email: {notify_err}")
+
                 # Mark any subsequent dependent steps as skipped so failure text is not processed or saved
                 all_steps = self.plan.get("steps", [])
                 for remaining_step in all_steps[idx + 1:]:
@@ -2305,7 +2340,7 @@ class WorkflowExecutionEngine:
         NETWORK_TOOLS = {
             "multi_search", "fetch_page", "get_latest_news", "web_search", "search_sources",
             "send_email", "send_telegram_message", "parse_resume", "score_resume_ats",
-            "generate_resume_improvements", "generate_cover_letter"
+            "generate_resume_improvements", "generate_cover_letter", "get_weather"
         }
         has_network_tools = any(s.get("tool") in NETWORK_TOOLS for s in self.plan.get("steps", []))
         if duration < 1.0 and has_network_tools and overall_status == "completed":

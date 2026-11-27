@@ -1,5 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { cleanAuthorUrnInput, isValidAuthorUrn } from '../utils/authorUrn';
+import { getApiUrl } from '../api/config';
+import { useAdminAuth } from '../hooks/useAdminAuth';
+import AdminVerificationModal from '../components/AdminVerificationModal';
 import { 
   Plug, 
   Sparkles, 
@@ -53,6 +56,9 @@ export default function ConnectionsPage({ onNavigate = () => {} }) {
   const [showMemberHelp, setShowMemberHelp] = useState(false);
   const [memberDetectionResult, setMemberDetectionResult] = useState(null);
 
+  // Secure remote administrative verification hook
+  const { executeAdminAction, adminModalProps } = useAdminAuth();
+
   const showToast = (msg, isErr = false) => {
     setToastMessage({ text: msg, isErr });
     setTimeout(() => setToastMessage(null), 4000);
@@ -61,7 +67,7 @@ export default function ConnectionsPage({ onNavigate = () => {} }) {
   const fetchConnections = async () => {
     setIsLoading(true);
     try {
-      const res = await fetch('/api/platform/connections');
+      const res = await fetch(getApiUrl('/api/platform/connections'));
       if (res.ok) {
         const data = await res.json();
         setConnectionsData(data.connections || {});
@@ -207,26 +213,35 @@ export default function ConnectionsPage({ onNavigate = () => {} }) {
         }
       }
 
-      const res = await fetch('/api/platform/connections/save', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-
-      if (res.ok) {
-        const resData = await res.json().catch(() => ({}));
-        const savedUrn = resData.cleaned_author_urn || payload.LINKEDIN_AUTHOR_URN;
-        if (savedUrn && serviceId === 'linkedin') {
-          handleInputChange('LINKEDIN_AUTHOR_URN', savedUrn);
-          showToast(`Saved LinkedIn credentials (Author URN: ${savedUrn})`);
-        } else {
-          showToast(`Saved credentials for ${serviceId.toUpperCase()}`);
+      await executeAdminAction(
+        async (adminHeaders) => {
+          return await fetch(getApiUrl('/api/platform/connections/save'), {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...adminHeaders
+            },
+            body: JSON.stringify(payload)
+          });
+        },
+        {
+          actionName: `Save ${serviceId.toUpperCase()} Credentials`,
+          onSuccess: async (res) => {
+            const resData = await res.json().catch(() => ({}));
+            const savedUrn = resData.cleaned_author_urn || payload.LINKEDIN_AUTHOR_URN;
+            if (savedUrn && serviceId === 'linkedin') {
+              handleInputChange('LINKEDIN_AUTHOR_URN', savedUrn);
+              showToast(`Saved LinkedIn credentials (Author URN: ${savedUrn})`);
+            } else {
+              showToast(`Saved credentials for ${serviceId.toUpperCase()}`);
+            }
+            await fetchConnections();
+          },
+          onError: (errData) => {
+            showToast(errData?.detail || errData?.message || 'Failed to save credentials', true);
+          }
         }
-        await fetchConnections();
-      } else {
-        const errData = await res.json().catch(() => ({}));
-        showToast(errData.detail || 'Failed to save credentials', true);
-      }
+      );
     } catch (e) {
       showToast(e.message || 'Error saving credentials', true);
     } finally {
@@ -259,7 +274,7 @@ export default function ConnectionsPage({ onNavigate = () => {} }) {
         if (payload.provider === 'openai') payload.api_key = formValues.OPENAI_API_KEY;
       }
 
-      const res = await fetch('/api/platform/connections/test', {
+      const res = await fetch(getApiUrl('/api/platform/connections/test'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
@@ -288,16 +303,29 @@ export default function ConnectionsPage({ onNavigate = () => {} }) {
       return;
     }
     try {
-      const res = await fetch('/api/platform/connections/disconnect', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ service_id: serviceId })
-      });
-      if (res.ok) {
-        showToast(`Disconnected ${serviceId.toUpperCase()}`);
-        setTestResults(prev => ({ ...prev, [serviceId]: null }));
-        await fetchConnections();
-      }
+      await executeAdminAction(
+        async (adminHeaders) => {
+          return await fetch(getApiUrl('/api/platform/connections/disconnect'), {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...adminHeaders
+            },
+            body: JSON.stringify({ service_id: serviceId })
+          });
+        },
+        {
+          actionName: `Disconnect ${serviceId.toUpperCase()}`,
+          onSuccess: async () => {
+            showToast(`Disconnected ${serviceId.toUpperCase()}`);
+            setTestResults(prev => ({ ...prev, [serviceId]: null }));
+            await fetchConnections();
+          },
+          onError: (errData) => {
+            showToast(errData?.detail || errData?.message || 'Failed to disconnect', true);
+          }
+        }
+      );
     } catch (e) {
       showToast('Failed to disconnect', true);
     }
@@ -309,12 +337,26 @@ export default function ConnectionsPage({ onNavigate = () => {} }) {
     }
     setIsPurging(true);
     try {
-      const res = await fetch('/api/platform/data/clear-demo', { method: 'POST' });
-      if (res.ok) {
-        const data = await res.json();
-        showToast("Database sanitized! All test calls and mock data permanently cleared.");
-        await fetchConnections();
-      }
+      await executeAdminAction(
+        async (adminHeaders) => {
+          return await fetch(getApiUrl('/api/platform/data/clear-demo'), {
+            method: 'POST',
+            headers: {
+              ...adminHeaders
+            }
+          });
+        },
+        {
+          actionName: 'Sanitize Database (Clean Slate)',
+          onSuccess: async () => {
+            showToast("Database sanitized! All test calls and mock data permanently cleared.");
+            await fetchConnections();
+          },
+          onError: (errData) => {
+            showToast("Purge failed: " + (errData?.detail || errData?.message || 'Error'), true);
+          }
+        }
+      );
     } catch (e) {
       showToast("Purge failed: " + e.message, true);
     } finally {
@@ -1361,6 +1403,9 @@ export default function ConnectionsPage({ onNavigate = () => {} }) {
 
         </div>
       )}
+
+      {/* Reusable Remote Admin Verification Modal */}
+      <AdminVerificationModal {...adminModalProps} />
 
     </div>
   );

@@ -6,6 +6,7 @@ All web operations are 100% free with no paid APIs.
 """
 
 import os
+import sys
 import re
 import json
 import socket
@@ -15,7 +16,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Optional, List, Dict, Any, Union
+from typing import Optional, List, Dict, Any, Union, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
@@ -987,77 +988,147 @@ WEATHER_CODE_DESCRIPTIONS = {
     99: "Thunderstorm with heavy hail",
 }
 
+# Static coordinates fallback for major Indian and international cities
+# Ensures instant resilience if the Open-Meteo Geocoding API is down or rate-limited.
+KNOWN_CITY_COORDINATES: Dict[str, Dict[str, Any]] = {
+    "lucknow": {"name": "Lucknow", "admin1": "Uttar Pradesh", "country": "India", "lat": 26.8467, "lon": 80.9462},
+    "delhi": {"name": "New Delhi", "admin1": "Delhi", "country": "India", "lat": 28.6139, "lon": 77.2090},
+    "new delhi": {"name": "New Delhi", "admin1": "Delhi", "country": "India", "lat": 28.6139, "lon": 77.2090},
+    "mumbai": {"name": "Mumbai", "admin1": "Maharashtra", "country": "India", "lat": 19.0760, "lon": 72.8777},
+    "bengaluru": {"name": "Bengaluru", "admin1": "Karnataka", "country": "India", "lat": 12.9716, "lon": 77.5946},
+    "bangalore": {"name": "Bengaluru", "admin1": "Karnataka", "country": "India", "lat": 12.9716, "lon": 77.5946},
+    "hyderabad": {"name": "Hyderabad", "admin1": "Telangana", "country": "India", "lat": 17.3850, "lon": 78.4867},
+    "chennai": {"name": "Chennai", "admin1": "Tamil Nadu", "country": "India", "lat": 13.0827, "lon": 80.2707},
+    "kolkata": {"name": "Kolkata", "admin1": "West Bengal", "country": "India", "lat": 22.5726, "lon": 88.3639},
+    "pune": {"name": "Pune", "admin1": "Maharashtra", "country": "India", "lat": 18.5204, "lon": 73.8567},
+    "ahmedabad": {"name": "Ahmedabad", "admin1": "Gujarat", "country": "India", "lat": 23.0225, "lon": 72.5714},
+    "jaipur": {"name": "Jaipur", "admin1": "Rajasthan", "country": "India", "lat": 26.9124, "lon": 75.7873},
+    "kanpur": {"name": "Kanpur", "admin1": "Uttar Pradesh", "country": "India", "lat": 26.4499, "lon": 80.3319},
+    "varanasi": {"name": "Varanasi", "admin1": "Uttar Pradesh", "country": "India", "lat": 25.3176, "lon": 82.9739},
+    "noida": {"name": "Noida", "admin1": "Uttar Pradesh", "country": "India", "lat": 28.5355, "lon": 77.3910},
+    "gurugram": {"name": "Gurugram", "admin1": "Haryana", "country": "India", "lat": 28.4595, "lon": 77.0266},
+    "chandigarh": {"name": "Chandigarh", "admin1": "Punjab", "country": "India", "lat": 30.7333, "lon": 76.7794},
+    "london": {"name": "London", "admin1": "England", "country": "United Kingdom", "lat": 51.5074, "lon": -0.1278},
+    "new york": {"name": "New York", "admin1": "New York", "country": "United States", "lat": 40.7128, "lon": -74.0060},
+    "san francisco": {"name": "San Francisco", "admin1": "California", "country": "United States", "lat": 37.7749, "lon": -122.4194},
+    "tokyo": {"name": "Tokyo", "admin1": "Tokyo", "country": "Japan", "lat": 35.6762, "lon": 139.6503},
+    "dubai": {"name": "Dubai", "admin1": "Dubai", "country": "United Arab Emirates", "lat": 25.2048, "lon": 55.2708},
+    "singapore": {"name": "Singapore", "admin1": "Singapore", "country": "Singapore", "lat": 1.3521, "lon": 103.8198},
+    "paris": {"name": "Paris", "admin1": "Île-de-France", "country": "France", "lat": 48.8566, "lon": 2.3522},
+    "sydney": {"name": "Sydney", "admin1": "New South Wales", "country": "Australia", "lat": -33.8688, "lon": 151.2093},
+    "toronto": {"name": "Toronto", "admin1": "Ontario", "country": "Canada", "lat": 43.6532, "lon": -79.3832},
+}
 
-@tool
-def get_weather(city: str, days: int = 1) -> str:
+WEATHER_API_USER_AGENT = "AgentFlow-Weather/4.1 (https://github.com/agentflow; contact@agentflow.local)"
+
+
+def _safe_weather_get_json(url: str, timeout: int = 8, max_retries: int = 2) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     """
-    Fetches real-time weather and forecast for any city worldwide using the free Open-Meteo API.
+    Safely executes an HTTP GET request for weather APIs with bounded retries.
+    Catches empty responses, non-JSON bodies, rate limits, and network errors.
+    Never exposes credentials or secrets.
+    Returns (data_dict, error_description).
+    """
+    import time
+    headers = {
+        "User-Agent": WEATHER_API_USER_AGENT,
+        "Accept": "application/json"
+    }
+
+    last_err = None
+    for attempt in range(max_retries):
+        try:
+            res = requests.get(url, headers=headers, timeout=timeout)
+            if res.status_code == 429:
+                last_err = f"HTTP 429: Rate limit exceeded"
+                if attempt < max_retries - 1:
+                    time.sleep(1.0)
+                    continue
+                return None, last_err
+
+            if res.status_code != 200:
+                last_err = f"HTTP {res.status_code}"
+                if attempt < max_retries - 1 and res.status_code in (500, 502, 503, 504):
+                    time.sleep(1.0)
+                    continue
+                return None, last_err
+
+            raw_text = res.text if res.text is not None else ""
+            if not raw_text.strip():
+                last_err = f"Empty response body (0 bytes) received (HTTP {res.status_code})"
+                if attempt < max_retries - 1:
+                    time.sleep(0.5)
+                    continue
+                return None, last_err
+
+            try:
+                data = json.loads(raw_text)
+                return data, None
+            except json.JSONDecodeError as jde:
+                last_err = f"Invalid JSON received: {str(jde)}"
+                return None, last_err
+
+        except requests.exceptions.Timeout:
+            last_err = f"Connection timed out after {timeout}s"
+            if attempt < max_retries - 1:
+                time.sleep(0.5)
+                continue
+        except requests.exceptions.RequestException as req_err:
+            last_err = f"Network connection error: {str(req_err)}"
+            if attempt < max_retries - 1:
+                time.sleep(0.5)
+                continue
+        except Exception as exc:
+            last_err = f"Unexpected error: {str(exc)}"
+            break
+
+    return None, last_err or "Unknown error"
+
+
+def _fetch_weather_wttr_in(city: str, days: int = 1) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Fallback weather retrieval using the free wttr.in JSON endpoint.
     Zero API key required.
-    Args:
-        city: City name (e.g., 'Lucknow', 'Delhi', 'Mumbai', 'London')
-        days: Number of forecast days (1 to 7). Default is 1.
-    Returns:
-        Structured weather report with temperature (°C), weather condition, humidity %, wind speed, and daily forecast.
     """
     clean_city = city.strip()
-    if not clean_city:
-        return "Error: City name cannot be empty."
+    wttr_url = f"https://wttr.in/{urllib.parse.quote(clean_city)}?format=j1"
+    data, err = _safe_weather_get_json(wttr_url, timeout=8, max_retries=2)
+    if not data:
+        return None, err or "wttr.in unreachable"
 
     try:
-        # Step 1: Free Geocoding with Open-Meteo
-        geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={urllib.parse.quote(clean_city)}&count=1&language=en&format=json"
-        geo_res = requests.get(geo_url, headers={"User-Agent": USER_AGENT}, timeout=8)
-        if geo_res.status_code != 200:
-            return f"Error geocoding city '{clean_city}': HTTP {geo_res.status_code}"
+        curr = (data.get("current_condition") or [{}])[0]
+        temp = curr.get("temp_C", "N/A")
+        feels_like = curr.get("FeelsLikeC", "N/A")
+        humidity = curr.get("humidity", "N/A")
+        wind = curr.get("windspeedKmph", "N/A")
+        weather_desc_list = curr.get("weatherDesc") or [{}]
+        condition = weather_desc_list[0].get("value", "Fair") if weather_desc_list else "Fair"
 
-        geo_data = geo_res.json()
-        results = geo_data.get("results", [])
-        if not results:
-            return f"No location found matching city '{clean_city}'. Please check the city spelling."
+        area = (data.get("nearest_area") or [{}])[0]
+        resolved_name = ((area.get("areaName") or [{}])[0]).get("value", clean_city)
+        region = ((area.get("region") or [{}])[0]).get("value", "")
+        country = ((area.get("country") or [{}])[0]).get("value", "")
+        lat_str = area.get("latitude", "0.0")
+        lon_str = area.get("longitude", "0.0")
+        try:
+            lat = float(lat_str)
+            lon = float(lon_str)
+        except Exception:
+            lat, lon = 0.0, 0.0
 
-        loc = results[0]
-        lat = loc["latitude"]
-        lon = loc["longitude"]
-        resolved_name = loc.get("name", clean_city)
-        admin1 = loc.get("admin1", "")
-        country = loc.get("country", "")
-        location_header = f"{resolved_name}, {admin1}, {country}".replace(", ,", ",").strip(", ")
+        location_header = f"{resolved_name}, {region}, {country}".replace(", ,", ",").strip(", ")
 
-        # Step 2: Fetch forecast
-        days_clamped = max(1, min(7, int(days)))
-        forecast_url = (
-            f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}"
-            f"&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m"
-            f"&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max"
-            f"&timezone=auto&forecast_days={days_clamped}"
-        )
-        fc_res = requests.get(forecast_url, headers={"User-Agent": USER_AGENT}, timeout=8)
-        if fc_res.status_code != 200:
-            return f"Error fetching weather forecast: HTTP {fc_res.status_code}"
-
-        fc_data = fc_res.json()
-        current = fc_data.get("current", {})
-        temp = current.get("temperature_2m", "N/A")
-        feels_like = current.get("apparent_temperature", "N/A")
-        humidity = current.get("relative_humidity_2m", "N/A")
-        wind = current.get("wind_speed_10m", "N/A")
-        w_code = current.get("weather_code", 0)
-        condition = WEATHER_CODE_DESCRIPTIONS.get(w_code, "Fair")
-
-        daily = fc_data.get("daily", {})
         daily_lines = []
-        dates = daily.get("time", [])
-        max_temps = daily.get("temperature_2m_max", [])
-        min_temps = daily.get("temperature_2m_min", [])
-        precips = daily.get("precipitation_probability_max", [])
-        codes = daily.get("weather_code", [])
-
-        for i in range(len(dates)):
-            d_date = dates[i]
-            d_max = max_temps[i] if i < len(max_temps) else "N/A"
-            d_min = min_temps[i] if i < len(min_temps) else "N/A"
-            d_prec = precips[i] if i < len(precips) else "0"
-            d_desc = WEATHER_CODE_DESCRIPTIONS.get(codes[i] if i < len(codes) else 0, "Fair")
+        weather_days = data.get("weather") or []
+        for i, d in enumerate(weather_days[:days]):
+            d_date = d.get("date", f"Day {i+1}")
+            d_max = d.get("maxtempC", "N/A")
+            d_min = d.get("mintempC", "N/A")
+            mid_hour = (d.get("hourly") or [{}])[min(4, len(d.get("hourly", [])) - 1)] if d.get("hourly") else {}
+            d_desc_list = mid_hour.get("weatherDesc") or [{}]
+            d_desc = d_desc_list[0].get("value", condition) if d_desc_list else condition
+            d_prec = mid_hour.get("chanceofrain", "0")
             daily_lines.append(f"  • {d_date}: {d_desc} | High: {d_max}°C, Low: {d_min}°C | Rain Chance: {d_prec}%")
 
         forecast_str = "\n".join(daily_lines) if daily_lines else "  No extended forecast available."
@@ -1072,11 +1143,129 @@ def get_weather(city: str, days: int = 1) -> str:
             f"- Coordinates: {lat:.2f}°N, {lon:.2f}°E\n"
             f"\nUpcoming Forecast:\n{forecast_str}\n"
             f"--------------------------------------------------\n"
-            f"(Source: Open-Meteo Free Global Forecast API, zero-cost)"
+            f"(Source: wttr.in Free Global Meteorological Service, zero-cost)"
         )
-        return report
-    except Exception as e:
-        return f"Error retrieving weather for '{city}': {str(e)}"
+        return report, None
+    except Exception as parse_err:
+        return None, f"wttr.in parsing error: {str(parse_err)}"
+
+
+@tool
+def get_weather(city: str, days: int = 1) -> str:
+    """
+    Fetches real-time weather and forecast for any city worldwide using the free Open-Meteo API
+    with automatic wttr.in secondary failover and static coordinates backup.
+    Zero API key required.
+    Args:
+        city: City name (e.g., 'Lucknow', 'Delhi', 'Mumbai', 'London')
+        days: Number of forecast days (1 to 7). Default is 1.
+    Returns:
+        Structured weather report with temperature (°C), weather condition, humidity %, wind speed, and daily forecast.
+    """
+    clean_city = city.strip()
+    if not clean_city:
+        return "Error: City name cannot be empty."
+
+    days_clamped = max(1, min(7, int(days)))
+    city_lower = clean_city.lower()
+
+    lat = None
+    lon = None
+    location_header = clean_city
+    geo_error_log = None
+
+    # Step 1: Geocoding via Open-Meteo with safe JSON parsing & retries
+    geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={urllib.parse.quote(clean_city)}&count=1&language=en&format=json"
+    geo_data, geo_err = _safe_weather_get_json(geo_url, timeout=7, max_retries=2)
+
+    if geo_data and isinstance(geo_data, dict):
+        results = geo_data.get("results", [])
+        if results:
+            loc = results[0]
+            lat = loc.get("latitude")
+            lon = loc.get("longitude")
+            resolved_name = loc.get("name", clean_city)
+            admin1 = loc.get("admin1", "")
+            country = loc.get("country", "")
+            location_header = f"{resolved_name}, {admin1}, {country}".replace(", ,", ",").strip(", ")
+    else:
+        geo_error_log = geo_err
+
+    # Step 1b: If Open-Meteo geocoding failed or returned no results, check known city coordinates
+    if lat is None or lon is None:
+        if city_lower in KNOWN_CITY_COORDINATES:
+            fallback_info = KNOWN_CITY_COORDINATES[city_lower]
+            lat = fallback_info["lat"]
+            lon = fallback_info["lon"]
+            location_header = f"{fallback_info['name']}, {fallback_info['admin1']}, {fallback_info['country']}".replace(", ,", ",").strip(", ")
+            print(f"[Weather Tool] Geocoding API notice ({geo_error_log or 'no results'}); used verified coordinates for '{clean_city}' ({lat}, {lon}).")
+
+    # Step 2: If we have coordinates, query Open-Meteo Forecast
+    if lat is not None and lon is not None:
+        forecast_url = (
+            f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}"
+            f"&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m"
+            f"&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max"
+            f"&timezone=auto&forecast_days={days_clamped}"
+        )
+        fc_data, fc_err = _safe_weather_get_json(forecast_url, timeout=7, max_retries=2)
+
+        if fc_data and isinstance(fc_data, dict) and "current" in fc_data:
+            current = fc_data.get("current", {})
+            temp = current.get("temperature_2m", "N/A")
+            feels_like = current.get("apparent_temperature", "N/A")
+            humidity = current.get("relative_humidity_2m", "N/A")
+            wind = current.get("wind_speed_10m", "N/A")
+            w_code = current.get("weather_code", 0)
+            condition = WEATHER_CODE_DESCRIPTIONS.get(w_code, "Fair")
+
+            daily = fc_data.get("daily", {})
+            daily_lines = []
+            dates = daily.get("time", [])
+            max_temps = daily.get("temperature_2m_max", [])
+            min_temps = daily.get("temperature_2m_min", [])
+            precips = daily.get("precipitation_probability_max", [])
+            codes = daily.get("weather_code", [])
+
+            for i in range(len(dates)):
+                d_date = dates[i]
+                d_max = max_temps[i] if i < len(max_temps) else "N/A"
+                d_min = min_temps[i] if i < len(min_temps) else "N/A"
+                d_prec = precips[i] if i < len(precips) else "0"
+                d_desc = WEATHER_CODE_DESCRIPTIONS.get(codes[i] if i < len(codes) else 0, "Fair")
+                daily_lines.append(f"  • {d_date}: {d_desc} | High: {d_max}°C, Low: {d_min}°C | Rain Chance: {d_prec}%")
+
+            forecast_str = "\n".join(daily_lines) if daily_lines else "  No extended forecast available."
+
+            report = (
+                f"🌤️ Weather Report for {location_header}:\n"
+                f"--------------------------------------------------\n"
+                f"- Condition: {condition}\n"
+                f"- Current Temperature: {temp}°C (Feels like {feels_like}°C)\n"
+                f"- Relative Humidity: {humidity}%\n"
+                f"- Wind Speed: {wind} km/h\n"
+                f"- Coordinates: {lat:.2f}°N, {lon:.2f}°E\n"
+                f"\nUpcoming Forecast:\n{forecast_str}\n"
+                f"--------------------------------------------------\n"
+                f"(Source: Open-Meteo Free Global Forecast API, zero-cost)"
+            )
+            return report
+        else:
+            print(f"[Weather Tool] Open-Meteo forecast failed for '{clean_city}' ({fc_err}). Falling back to wttr.in secondary provider...", file=sys.stderr)
+
+    # Step 3: Secondary Provider Failover to wttr.in
+    wttr_report, wttr_err = _fetch_weather_wttr_in(clean_city, days=days_clamped)
+    if wttr_report:
+        return wttr_report
+
+    # Step 4: If all providers failed, log technical failure without secrets and return clear structured failure
+    technical_reason = f"Open-Meteo: {geo_error_log or 'forecast unavailable'}; wttr.in: {wttr_err or 'unreachable'}"
+    print(f"[Weather Tool Technical Failure] Failed to retrieve weather for '{clean_city}': {technical_reason}", file=sys.stderr)
+    return (
+        f"Error: Weather data currently unavailable for '{clean_city}'. "
+        f"Both primary (Open-Meteo) and secondary (wttr.in) meteorological services could not be reached or returned invalid data. "
+        f"Please check your internet connection or try again later."
+    )
 
 
 @tool

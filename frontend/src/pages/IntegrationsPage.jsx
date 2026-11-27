@@ -1,5 +1,8 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { cleanAuthorUrnInput, isValidAuthorUrn } from '../utils/authorUrn';
+import { getApiUrl } from '../api/config';
+import { useAdminAuth } from '../hooks/useAdminAuth';
+import AdminVerificationModal from '../components/AdminVerificationModal';
 import { 
   Plug, 
   Sparkles, 
@@ -103,6 +106,9 @@ export default function IntegrationsPage({ onNavigate = () => {} }) {
   // Global notification banner
   const [toastMsg, setToastMsg] = useState(null);
 
+  // Secure remote administrative verification hook
+  const { executeAdminAction, adminModalProps } = useAdminAuth();
+
   const showToast = (type, text) => {
     setToastMsg({ type, text });
     setTimeout(() => {
@@ -114,7 +120,7 @@ export default function IntegrationsPage({ onNavigate = () => {} }) {
     setIsLoading(true);
     setErrorMsg(null);
     try {
-      const res = await fetch('/api/platform/integrations/catalog');
+      const res = await fetch(getApiUrl('/api/platform/integrations/catalog'));
       if (res.ok) {
         const data = await res.json();
         setCatalog(data);
@@ -242,22 +248,32 @@ export default function IntegrationsPage({ onNavigate = () => {} }) {
     if (!activeConfigItem) return;
     setIsSaving(true);
     try {
-      const res = await fetch('/api/platform/integrations/save', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          integration_id: activeConfigItem.id,
-          credentials: configForm
-        })
-      });
-      const data = await res.json();
-      if (res.ok) {
-        showToast('success', `Saved credentials for ${activeConfigItem.name}.`);
-        setActiveConfigItem(null);
-        await fetchCatalog();
-      } else {
-        showToast('error', data.detail || data.message || 'Failed to save credentials.');
-      }
+      await executeAdminAction(
+        async (adminHeaders) => {
+          return await fetch(getApiUrl('/api/platform/integrations/save'), {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...adminHeaders
+            },
+            body: JSON.stringify({
+              integration_id: activeConfigItem.id,
+              credentials: configForm
+            })
+          });
+        },
+        {
+          actionName: `Configure ${activeConfigItem.name}`,
+          onSuccess: async () => {
+            showToast('success', `Saved credentials for ${activeConfigItem.name}.`);
+            setActiveConfigItem(null);
+            await fetchCatalog();
+          },
+          onError: (errData) => {
+            showToast('error', errData?.detail || errData?.message || 'Failed to save credentials.');
+          }
+        }
+      );
     } catch (e) {
       showToast('error', e.message || 'Error saving credentials.');
     } finally {
@@ -377,32 +393,41 @@ export default function IntegrationsPage({ onNavigate = () => {} }) {
         credsToSave.LINKEDIN_CLIENT_ID = linkedInForm.clientId.trim();
       }
 
-      const saveRes = await fetch('/api/platform/integrations/save', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          integration_id: 'linkedin',
-          credentials: credsToSave
-        })
-      });
-
-      if (saveRes.ok) {
-        setLinkedInTestStatus({
-          loading: false,
-          success: testData.success,
-          message: testData.success 
-            ? 'LinkedIn credentials successfully validated and saved!' 
-            : `Credentials saved. Notice: ${testData.message}`
-        });
-        showToast('success', 'LinkedIn credentials updated successfully.');
-        setTimeout(() => {
-          setShowLinkedInReconfig(false);
-          fetchCatalog();
-        }, 1200);
-      } else {
-        const saveErr = await saveRes.json();
-        setLinkedInTestStatus({ loading: false, success: false, message: saveErr.detail || 'Save failed' });
-      }
+      await executeAdminAction(
+        async (adminHeaders) => {
+          return await fetch(getApiUrl('/api/platform/integrations/save'), {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...adminHeaders
+            },
+            body: JSON.stringify({
+              integration_id: 'linkedin',
+              credentials: credsToSave
+            })
+          });
+        },
+        {
+          actionName: 'Save LinkedIn Credentials',
+          onSuccess: async () => {
+            setLinkedInTestStatus({
+              loading: false,
+              success: testData.success,
+              message: testData.success 
+                ? 'LinkedIn credentials successfully validated and saved!' 
+                : `Credentials saved. Notice: ${testData.message}`
+            });
+            showToast('success', 'LinkedIn credentials updated successfully.');
+            setTimeout(() => {
+              setShowLinkedInReconfig(false);
+              fetchCatalog();
+            }, 1200);
+          },
+          onError: (saveErr) => {
+            setLinkedInTestStatus({ loading: false, success: false, message: saveErr.detail || saveErr.message || 'Save failed' });
+          }
+        }
+      );
     } catch (e) {
       setLinkedInTestStatus({ loading: false, success: false, message: e.message || 'Error configuring LinkedIn' });
     } finally {
@@ -415,18 +440,29 @@ export default function IntegrationsPage({ onNavigate = () => {} }) {
     if (!disconnectItem) return;
     setIsDisconnecting(true);
     try {
-      const res = await fetch('/api/platform/integrations/disconnect', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ service_id: disconnectItem.id })
-      });
-      if (res.ok) {
-        showToast('success', `Disconnected ${disconnectItem.name}.`);
-        setDisconnectItem(null);
-        await fetchCatalog();
-      } else {
-        showToast('error', 'Failed to disconnect integration.');
-      }
+      await executeAdminAction(
+        async (adminHeaders) => {
+          return await fetch(getApiUrl('/api/platform/integrations/disconnect'), {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...adminHeaders
+            },
+            body: JSON.stringify({ service_id: disconnectItem.id })
+          });
+        },
+        {
+          actionName: `Disconnect ${disconnectItem.name}`,
+          onSuccess: async () => {
+            showToast('success', `Disconnected ${disconnectItem.name}.`);
+            setDisconnectItem(null);
+            await fetchCatalog();
+          },
+          onError: (errData) => {
+            showToast('error', errData?.detail || errData?.message || 'Failed to disconnect integration.');
+          }
+        }
+      );
     } catch (e) {
       showToast('error', e.message || 'Error disconnecting integration.');
     } finally {
@@ -1268,6 +1304,9 @@ export default function IntegrationsPage({ onNavigate = () => {} }) {
           </div>
         </div>
       )}
+
+      {/* Reusable Remote Admin Verification Modal */}
+      <AdminVerificationModal {...adminModalProps} />
     </div>
   );
 }
